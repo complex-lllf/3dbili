@@ -28,7 +28,7 @@ void Http_SetHeaders(const std::string& userAgent, const std::string& referer) {
     s_referer   = referer;
 }
 
-// 内部：构建并发送请求，返回 HTTP 上下文
+// 内部：构建并发送请求
 static Result Http_DoRequest(const std::string& url,
                              httpcContext* ctx,
                              u32* outStatus,
@@ -38,12 +38,10 @@ static Result Http_DoRequest(const std::string& url,
     rc = httpcOpenContext(ctx, HTTPC_METHOD_GET, url.c_str(), 1);
     if (R_FAILED(rc)) return rc;
 
-    // 设置默认请求头
     httpcAddRequestHeaderField(ctx, "User-Agent", s_userAgent.c_str());
     httpcAddRequestHeaderField(ctx, "Referer", s_referer.c_str());
     httpcAddRequestHeaderField(ctx, "Accept", "application/json, text/plain, */*");
 
-    // 追加自定义请求头
     for (const auto& h : extraHeaders) {
         size_t colon = h.find(':');
         if (colon != std::string::npos) {
@@ -54,13 +52,21 @@ static Result Http_DoRequest(const std::string& url,
         }
     }
 
-    // 对于视频流，禁用 keep-alive
     httpcSetKeepAlive(ctx, HTTPC_KEEPALIVE_DISABLED);
     rc = httpcBeginRequest(ctx);
     if (R_FAILED(rc)) return rc;
 
     rc = httpcGetResponseStatusCode(ctx, outStatus);
     return rc;
+}
+
+// 内部：获取内容总大小
+static size_t Http_GetContentLength(httpcContext* ctx) {
+    u32 contentSize = 0;
+    if (R_FAILED(httpcGetDownloadSizeState(ctx, nullptr, &contentSize))) {
+        return 0;
+    }
+    return (size_t)contentSize;
 }
 
 HttpResponse Http_Get(const std::string& url, const std::vector<std::string>& extraHeaders) {
@@ -71,7 +77,6 @@ HttpResponse Http_Get(const std::string& url, const std::vector<std::string>& ex
     httpcContext ctx;
     u32 status = 0;
     Result rc = Http_DoRequest(url, &ctx, &status, extraHeaders);
-
     if (R_FAILED(rc)) {
         httpcCloseContext(&ctx);
         return resp;
@@ -80,15 +85,27 @@ HttpResponse Http_Get(const std::string& url, const std::vector<std::string>& ex
     resp.statusCode = (int)status;
 
     if (status == 200) {
-        // 逐块读取响应体
-        u32 readSize = 0;
-        char buffer[8192];
-        while (R_SUCCEEDED(httpcReceiveData(&ctx, (u8*)buffer, sizeof(buffer) - 1, &readSize)) && readSize > 0) {
-            buffer[readSize] = '\0';
-            resp.body.append(buffer, readSize);
-            readSize = 0;
+        size_t total = Http_GetContentLength(&ctx);
+        if (total == 0) {
+            // 如果服务器没给 Content-Length，用保守的兜底策略：
+            // 逐步读取直到 httpcDownloadData 返回没有更多数据
+            // 但为了简洁，此处直接返回失败
+            httpcCloseContext(&ctx);
+            return resp;
         }
-        resp.success = true;
+
+        // 预分配缓冲区
+        resp.body.resize(total);
+
+        u32 downloaded = 0;
+        // httpcDownloadData 会一次性下载全部内容
+        rc = httpcDownloadData(&ctx, (u8*)resp.body.data(), (u32)total, &downloaded);
+        if (R_SUCCEEDED(rc)) {
+            resp.body.resize(downloaded);
+            resp.success = true;
+        } else {
+            resp.body.clear();
+        }
     }
 
     httpcCloseContext(&ctx);
@@ -103,7 +120,6 @@ HttpResponse Http_DownloadToMemory(const std::string& url) {
     httpcContext ctx;
     u32 status = 0;
     Result rc = Http_DoRequest(url, &ctx, &status, {});
-
     if (R_FAILED(rc) || status != 200) {
         httpcCloseContext(&ctx);
         return resp;
@@ -111,28 +127,28 @@ HttpResponse Http_DownloadToMemory(const std::string& url) {
 
     resp.statusCode = (int)status;
 
-    // 动态增长缓冲区
-    size_t capacity = 65536;
-    resp.binaryData = (u8*)malloc(capacity);
+    size_t total = Http_GetContentLength(&ctx);
+    if (total == 0) {
+        httpcCloseContext(&ctx);
+        return resp;
+    }
+
+    resp.binaryData = (u8*)malloc(total);
     if (!resp.binaryData) {
         httpcCloseContext(&ctx);
         return resp;
     }
 
-    u32 readSize = 0;
-    while (R_SUCCEEDED(httpcReceiveData(&ctx, resp.binaryData + resp.binarySize,
-                                        capacity - resp.binarySize, &readSize)) && readSize > 0) {
-        resp.binarySize += readSize;
-        if (resp.binarySize >= capacity) {
-            capacity *= 2;
-            u8* newBuf = (u8*)realloc(resp.binaryData, capacity);
-            if (!newBuf) break;
-            resp.binaryData = newBuf;
-        }
-        readSize = 0;
+    u32 downloaded = 0;
+    rc = httpcDownloadData(&ctx, resp.binaryData, (u32)total, &downloaded);
+    if (R_SUCCEEDED(rc)) {
+        resp.binarySize = downloaded;
+        resp.success = true;
+    } else {
+        free(resp.binaryData);
+        resp.binaryData = nullptr;
     }
 
-    resp.success = true;
     httpcCloseContext(&ctx);
     return resp;
 }
@@ -146,7 +162,6 @@ HttpResponse Http_DownloadToFile(const std::string& url, const std::string& file
     httpcContext ctx;
     u32 status = 0;
     Result rc = Http_DoRequest(url, &ctx, &status, {});
-
     if (R_FAILED(rc) || status != 200) {
         httpcCloseContext(&ctx);
         return resp;
@@ -154,10 +169,7 @@ HttpResponse Http_DownloadToFile(const std::string& url, const std::string& file
 
     resp.statusCode = (int)status;
 
-    // 获取 Content-Length（新版 libctru 的 4 参数形式）
-    char lenBuf[32] = {0};
-    httpcGetResponseHeader(&ctx, "Content-Length", lenBuf, sizeof(lenBuf));
-    size_t totalSize = (size_t)strtoul(lenBuf, nullptr, 10);
+    size_t totalSize = Http_GetContentLength(&ctx);
 
     FILE* fp = fopen(filePath.c_str(), "wb");
     if (!fp) {
@@ -165,22 +177,48 @@ HttpResponse Http_DownloadToFile(const std::string& url, const std::string& file
         return resp;
     }
 
-    u32 readSize = 0;
-    u8 buffer[16384];
-    size_t downloaded = 0;
+    // 分块下载，避免一次性占用过多内存
+    const u32 CHUNK_SIZE = 16384;
+    u8* buffer = (u8*)malloc(CHUNK_SIZE);
+    if (!buffer) {
+        fclose(fp);
+        httpcCloseContext(&ctx);
+        return resp;
+    }
 
-    while (R_SUCCEEDED(httpcReceiveData(&ctx, buffer, sizeof(buffer), &readSize)) && readSize > 0) {
-        fwrite(buffer, 1, readSize, fp);
-        downloaded += readSize;
+    size_t downloaded = 0;
+    bool success = false;
+
+    while (downloaded < totalSize) {
+        u32 chunk = (totalSize - downloaded > CHUNK_SIZE) ? CHUNK_SIZE : (u32)(totalSize - downloaded);
+        u32 readBytes = 0;
+
+        rc = httpcDownloadData(&ctx, buffer, chunk, &readBytes);
+        if (R_FAILED(rc) || readBytes == 0) {
+            break;
+        }
+
+        fwrite(buffer, 1, readBytes, fp);
+        downloaded += readBytes;
+
         if (progressCallback) {
             progressCallback(downloaded, totalSize);
         }
-        readSize = 0;
+
+        if (readBytes < chunk) {
+            // 没有更多数据
+            break;
+        }
     }
 
+    free(buffer);
     fclose(fp);
     httpcCloseContext(&ctx);
-    resp.success = true;
-    resp.binarySize = downloaded;
+
+    if (downloaded > 0) {
+        resp.success = true;
+        resp.binarySize = downloaded;
+    }
+
     return resp;
 }
