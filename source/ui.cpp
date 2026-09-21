@@ -7,7 +7,7 @@
 UIManager::UIManager()
     : m_topTarget(nullptr), m_bottomTarget(nullptr), m_font(nullptr),
       m_screenWidth(400.0f), m_screenHeight(240.0f),
-      m_selectedIndex(0), m_scrollOffset(0) {
+      m_selectedIndex(0), m_scrollOffset(0), m_resultCount(0) {
 }
 
 UIManager::~UIManager() {
@@ -24,7 +24,13 @@ bool UIManager::Init() {
     m_topTarget = C2D_CreateScreenTarget(GFX_TOP, GFX_LEFT);
     m_bottomTarget = C2D_CreateScreenTarget(GFX_BOTTOM, GFX_LEFT);
 
-    m_textBuf = C2D_TextBufNew(8192);
+    // TextBuf 需要足够大：每帧要画十余处文字（含中文标题），8192 字节远远不够
+    // 一旦 C2D_TextParse 因缓冲区满失败，后续 C2D_DrawText 会写入 NULL 指针导致崩溃
+    m_textBuf = C2D_TextBufNew(65536);
+    if (!m_textBuf) {
+        LOGF("C2D_TextBufNew failed\n");
+        return false;
+    }
     LOGF("UI initialized\n");
     return true;
 }
@@ -75,7 +81,11 @@ C2D_Image* UIManager::GetCoverTexture(const std::string& url) {
 
 void UIManager::DrawText(const std::string& text, float x, float y, float scale, u32 color) {
     C2D_Text c2dText;
-    C2D_TextParse(&c2dText, m_textBuf, text.c_str());
+    // C2D_TextParse 返回 false 时 c2dText 内部指针可能无效，
+    // 若继续 C2D_DrawText 会写空指针导致 data abort
+    if (!C2D_TextParse(&c2dText, m_textBuf, text.c_str())) {
+        return;
+    }
     C2D_TextOptimize(&c2dText);
     C2D_DrawText(&c2dText, C2D_WithColor, x, y, 0.5f, scale, color);
 }
@@ -254,7 +264,10 @@ int UIManager::HandleInput() {
     if (kDown & KEY_B) return 2;
     if (kDown & KEY_Y) return 3;
     if (kDown & KEY_DOWN) {
-        m_selectedIndex++;
+        // 限制索引不越界
+        if (m_resultCount > 0 && m_selectedIndex + 1 < m_resultCount) {
+            m_selectedIndex++;
+        }
         return 0;
     }
     if (kDown & KEY_UP) {
@@ -270,4 +283,5 @@ int UIManager::HandleInput() {
 void UIManager::SetResults(const std::vector<VideoSearchItem>& results) {
     m_selectedIndex = 0;
     m_scrollOffset = 0;
+    m_resultCount = (int)results.size();
 }
