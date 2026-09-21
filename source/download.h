@@ -38,8 +38,9 @@ public:
     bool StartDownload(const std::string& bvid, const std::string& title,
                        const std::string& directUrl);
 
-    // 获取当前任务状态
-    const DownloadTask& GetCurrentTask() const { return m_currentTask; }
+    // 获取当前任务状态（返回拷贝，内部加锁，防止与下载线程数据竞争）
+    DownloadTask GetCurrentTask() const;
+
     bool IsDownloading() const { return m_isDownloading; }
 
     // 取消当前下载
@@ -54,7 +55,7 @@ public:
     }
 
 private:
-    DownloadManager() = default;
+    DownloadManager();
     ~DownloadManager();
 
     // 禁止拷贝
@@ -72,6 +73,9 @@ private:
     Thread m_thread = nullptr;
 
     std::function<void(size_t, size_t)> m_progressCallback;
+
+    // 保护 m_currentTask 的轻量互斥锁（libctru LightLock）
+    mutable LightLock m_taskLock;
 
     // 目录路径（sdmc: 前缀，CIA / 3dsx 通用）
     static constexpr const char* SD_DIR   = "sdmc:/3dbili";
