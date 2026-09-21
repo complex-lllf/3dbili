@@ -101,7 +101,8 @@ $(BUILD):
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
 
 #---------------------------------------------------------------------------------
-# 生成 .cia：需要 makerom 与 bannertool（devkitPro 自带）
+# 生成 .cia：需要 makerom 与 bannertool
+# 若当前环境未安装，可参考 .github/workflows/build.yml 的下载步骤
 #---------------------------------------------------------------------------------
 $(TARGET).cia: $(TARGET).elf $(BANNER) $(ICON) $(RSF)
 	@echo "building cia ..."
