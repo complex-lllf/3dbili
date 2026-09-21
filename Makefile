@@ -10,12 +10,6 @@ TOPDIR ?= $(CURDIR)
 include $(DEVKITARM)/3ds_rules
 
 #---------------------------------------------------------------------------------
-# TARGET 是你的可执行文件名
-# BUILD 是构建目录
-# SOURCES 是源文件目录列表
-# DATA 是包含二进制数据的目录
-# INCLUDES 是包含头文件的目录
-#---------------------------------------------------------------------------------
 TARGET      := bilibili-3ds
 BUILD       := build
 SOURCES     := source
@@ -23,8 +17,10 @@ DATA        := data
 INCLUDES    := source
 ROMFS       := romfs
 
-#---------------------------------------------------------------------------------
-# options for code generation
+ifeq ($(DEBUG),1)
+BUILD       := build-debug
+endif
+
 #---------------------------------------------------------------------------------
 ARCH        := -march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft
 
@@ -36,19 +32,17 @@ CFLAGS      += $(INCLUDE) -D__3DS__
 
 CXXFLAGS    := $(CFLAGS) -std=gnu++17 -fno-rtti -fno-exceptions
 
+ifeq ($(DEBUG),1)
+CFLAGS      += -O0 -DENABLE_DEBUG_LOG
+CXXFLAGS    += -O0 -DENABLE_DEBUG_LOG
+endif
+
 ASFLAGS     := -g $(ARCH)
 LDFLAGS      = -specs=3dsx.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
 
 LIBS        := -lcitro2d -lcitro3d -lctru -lm
-
-#---------------------------------------------------------------------------------
-# list of directories containing libraries
-#---------------------------------------------------------------------------------
 LIBDIRS     := $(CTRULIB)
 
-#---------------------------------------------------------------------------------
-# no real need to edit anything past this point unless you need to add additional
-# rules for different file extensions
 #---------------------------------------------------------------------------------
 ifneq ($(BUILD),$(notdir $(CURDIR)))
 #---------------------------------------------------------------------------------
@@ -66,9 +60,6 @@ CPPFILES    := $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.cpp)))
 SFILES      := $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.s)))
 BINFILES    := $(foreach dir,$(DATA),$(notdir $(wildcard $(dir)/*.*)))
 
-#---------------------------------------------------------------------------------
-# use CXX for linking C++ projects, CC for standard C
-#---------------------------------------------------------------------------------
 export LD       := $(CXX)
 export OFILES_BIN := $(addsuffix .o,$(BINFILES))
 export OFILES_SRC := $(CPPFILES:.cpp=.o) $(CFILES:.c=.o) $(SFILES:.s=.o)
@@ -81,19 +72,47 @@ export INCLUDE    := $(foreach dir,$(INCLUDES),-I$(CURDIR)/$(dir)) \
 
 export LIBPATHS   := $(foreach dir,$(LIBDIRS),-L$(dir)/lib)
 
-.PHONY: $(BUILD) clean all
+# CIA 相关变量
+BANNER      := meta/banner.png
+ICON        := meta/icon.png
+RSF         := meta/bilibili-3ds.rsf
+SMDH        := $(TARGET).smdh
+BANNER_BIN  := $(TARGET)-banner.bnr
+ICON_BIN    := $(TARGET)-icon.icn
+
+.PHONY: $(BUILD) clean all 3dsx cia
 
 #---------------------------------------------------------------------------------
-all: $(BUILD)
+all: 3dsx
 
+3dsx: $(BUILD)
+	@echo "built ... $(TARGET).3dsx"
+
+cia: $(BUILD) $(TARGET).cia
+	@echo "built ... $(TARGET).cia"
+
+#---------------------------------------------------------------------------------
 $(BUILD):
 	@[ -d $@ ] || mkdir -p $@
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
 
 #---------------------------------------------------------------------------------
+# 生成 .cia：需要 makerom 与 bannertool（devkitPro 自带）
+#---------------------------------------------------------------------------------
+$(TARGET).cia: $(TARGET).elf $(BANNER) $(ICON) $(RSF)
+	@echo "building cia ..."
+	bannertool makebanner -i $(BANNER) -o $(BANNER_BIN)
+	bannertool makesmdh -s "3dbili" -l "Bilibili 3DS Client" -p "AI generated" \
+	                    -i $(ICON) -o $(ICON_BIN)
+	makerom -f cia -o $(TARGET).cia -target t -exefslogo \
+	        -elf $(TARGET).elf -icon $(ICON_BIN) -banner $(BANNER_BIN) -rsf $(RSF)
+
+#---------------------------------------------------------------------------------
 clean:
 	@echo clean ...
-	@rm -fr $(BUILD) $(TARGET).3dsx $(OUTPUT).smdh $(TARGET).elf
+	@rm -fr build build-debug \
+	       $(TARGET).3dsx $(TARGET).smdh $(TARGET).elf $(TARGET).cia \
+	       $(BANNER_BIN) $(ICON_BIN)
 
 #---------------------------------------------------------------------------------
 else
@@ -101,9 +120,6 @@ else
 
 DEPENDS := $(OFILES:.o=.d)
 
-#---------------------------------------------------------------------------------
-# main targets
-#---------------------------------------------------------------------------------
 all: $(OUTPUT).3dsx $(OUTPUT).smdh
 
 $(OUTPUT).3dsx : $(OUTPUT).elf
@@ -111,15 +127,10 @@ $(OUTPUT).elf  : $(OFILES)
 
 $(OFILES_SRC)  : $(HFILES_BIN)
 
-#---------------------------------------------------------------------------------
-# you need a rule like this for each extension you use as binary data
-#---------------------------------------------------------------------------------
 %.bin.o %_bin.h : %.bin
 	@echo $(notdir $<)
 	@$(bin2o)
 
 -include $(DEPENDS)
 
-#---------------------------------------------------------------------------------------
 endif
-#---------------------------------------------------------------------------------------
