@@ -125,9 +125,8 @@ std::string OpenKeyboard(const std::string& initialText) {
     SwkbdState swkbd;
     char buffer[256] = {0};
 
-    if (R_FAILED(swkbdInit(&swkbd, SWKBD_TYPE_NORMAL, 2, 255))) {
-        return "";
-    }
+    // swkbdInit 返回 void，没有 Result 可检查
+    swkbdInit(&swkbd, SWKBD_TYPE_NORMAL, 2, 255);
     swkbdSetHintText(&swkbd, "Enter search keyword...");
     swkbdSetInitialText(&swkbd, initialText.c_str());
     swkbdSetValidation(&swkbd, SWKBD_NOTEMPTY_NOTBLANK, 0, 0);
