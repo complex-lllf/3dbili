@@ -81,7 +81,6 @@ BANNER_BIN  := $(TARGET)-banner.bnr
 ICON_BIN    := $(TARGET)-icon.icn
 
 # devkitPro 工具绝对路径（不依赖 PATH）
-# bannertool 和 makerom 需要手动安装到 DEVKITPRO/tools/bin/
 BANNERTOOL  := $(DEVKITPRO)/tools/bin/bannertool
 MAKEROM     := $(DEVKITPRO)/tools/bin/makerom
 
@@ -107,9 +106,11 @@ $(BUILD):
 #---------------------------------------------------------------------------------
 $(TARGET).cia: $(TARGET).elf $(BANNER) $(ICON) $(RSF)
 	@echo "building cia ..."
-	$(BANNERTOOL) makebanner -i $(BANNER) -o $(BANNER_BIN)
+	@test -f "$(BANNER)" || (echo "ERROR: $(BANNER) not found" && exit 1)
+	@test -f "$(ICON)"   || (echo "ERROR: $(ICON) not found" && exit 1)
+	$(BANNERTOOL) makebanner -i "$(BANNER)" -o "$(BANNER_BIN)"
 	$(BANNERTOOL) makesmdh -s "3dbili" -l "Bilibili 3DS Client" \
-	    -p "AI generated" -i $(ICON) -o $(ICON_BIN)
+	    -p "AI generated" -i "$(ICON)" -o "$(ICON_BIN)"
 	$(MAKEROM) -f cia -o $(TARGET).cia -target t -exefslogo \
 	    -elf $(TARGET).elf -icon $(ICON_BIN) -banner $(BANNER_BIN) -rsf $(RSF)
 
