@@ -18,6 +18,10 @@ DownloadManager& DownloadManager::Instance() {
     return instance;
 }
 
+DownloadManager::DownloadManager() {
+    LightLock_Init(&m_taskLock);
+}
+
 DownloadManager::~DownloadManager() {
     CancelDownload();
 }
@@ -54,6 +58,7 @@ bool DownloadManager::StartDownload(const std::string& bvid, const std::string& 
     if (m_isDownloading) return false;
     if (directUrl.empty()) return false;
 
+    LightLock_Lock(&m_taskLock);
     m_currentTask.bvid = bvid;
     m_currentTask.title = title;
     m_currentTask.directUrl = directUrl;
@@ -65,6 +70,7 @@ bool DownloadManager::StartDownload(const std::string& bvid, const std::string& 
 
     std::string safeName = SanitizeFilename(title);
     m_currentTask.outputPath = std::string(DOWN_DIR) + "/" + safeName + ".mp4";
+    LightLock_Unlock(&m_taskLock);
 
     LOGF("start download: bvid=%s -> %s\n", bvid.c_str(), m_currentTask.outputPath.c_str());
     LOGF("  direct url: %s\n", directUrl.c_str());
@@ -77,12 +83,21 @@ bool DownloadManager::StartDownload(const std::string& bvid, const std::string& 
     if (!m_thread) {
         LOGF("failed to create download thread\n");
         m_isDownloading = false;
+        LightLock_Lock(&m_taskLock);
         m_currentTask.isFailed = true;
         m_currentTask.errorMsg = "Failed to create download thread";
+        LightLock_Unlock(&m_taskLock);
         return false;
     }
 
     return true;
+}
+
+DownloadTask DownloadManager::GetCurrentTask() const {
+    LightLock_Lock(&m_taskLock);
+    DownloadTask copy = m_currentTask;
+    LightLock_Unlock(&m_taskLock);
+    return copy;
 }
 
 void DownloadManager::CancelDownload() {
@@ -101,20 +116,29 @@ void DownloadManager::DownloadThreadFunc(void* arg) {
     DownloadManager* self = (DownloadManager*)arg;
 
     HttpProgressCallback progressCb = [self](size_t current, size_t total) {
+        LightLock_Lock(&self->m_taskLock);
         self->m_currentTask.downloadedBytes = current;
         self->m_currentTask.totalBytes = total;
+        LightLock_Unlock(&self->m_taskLock);
+
         if (self->m_progressCallback) {
             self->m_progressCallback(current, total);
         }
     };
 
-    HttpResponse resp = Http_DownloadToFile(
-        self->m_currentTask.directUrl,
-        self->m_currentTask.outputPath,
-        progressCb);
+    // 拷贝需要的字段，避免后续访问 m_currentTask 时与其他线程竞争
+    LightLock_Lock(&self->m_taskLock);
+    std::string url = self->m_currentTask.directUrl;
+    std::string path = self->m_currentTask.outputPath;
+    LightLock_Unlock(&self->m_taskLock);
 
+    HttpResponse resp = Http_DownloadToFile(url, path, progressCb);
+
+    LightLock_Lock(&self->m_taskLock);
     if (self->m_shouldCancel) {
-        remove(self->m_currentTask.outputPath.c_str());
+        LightLock_Unlock(&self->m_taskLock);
+        remove(path.c_str());
+        LightLock_Lock(&self->m_taskLock);
         self->m_currentTask.isFailed = true;
         self->m_currentTask.errorMsg = "Cancelled";
         LOGF("download cancelled\n");
@@ -124,9 +148,12 @@ void DownloadManager::DownloadThreadFunc(void* arg) {
     } else {
         self->m_currentTask.isFailed = true;
         self->m_currentTask.errorMsg = "Download failed";
-        remove(self->m_currentTask.outputPath.c_str());
+        LightLock_Unlock(&self->m_taskLock);
+        remove(path.c_str());
+        LightLock_Lock(&self->m_taskLock);
         LOGF("download failed\n");
     }
+    LightLock_Unlock(&self->m_taskLock);
 
     self->m_isDownloading = false;
 }
