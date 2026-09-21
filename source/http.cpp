@@ -1,6 +1,7 @@
 #include "http.h"
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>
 
 // 默认请求头
 static std::string s_userAgent = "Mozilla/5.0 (Nintendo 3DS; Linux) AppleWebKit/605.1.15";
@@ -53,7 +54,7 @@ static Result Http_DoRequest(const std::string& url,
         }
     }
 
-    // 对于视频流，允许重定向
+    // 对于视频流，禁用 keep-alive
     httpcSetKeepAlive(ctx, HTTPC_KEEPALIVE_DISABLED);
     rc = httpcBeginRequest(ctx);
     if (R_FAILED(rc)) return rc;
@@ -137,7 +138,7 @@ HttpResponse Http_DownloadToMemory(const std::string& url) {
 }
 
 HttpResponse Http_DownloadToFile(const std::string& url, const std::string& filePath,
-                                 void (*progressCallback)(size_t, size_t)) {
+                                 HttpProgressCallback progressCallback) {
     HttpResponse resp = { false, 0, "", nullptr, 0 };
 
     if (!s_httpInitialized) return resp;
@@ -154,8 +155,6 @@ HttpResponse Http_DownloadToFile(const std::string& url, const std::string& file
     resp.statusCode = (int)status;
 
     // 获取 Content-Length
-    u32 contentLength = 0;
-    httpcGetResponseHeader(ctx, "Content-Length", nullptr, 0, &contentLength);
     char lenBuf[32] = {0};
     httpcGetResponseHeader(ctx, "Content-Length", lenBuf, sizeof(lenBuf), nullptr);
     size_t totalSize = (size_t)strtoul(lenBuf, nullptr, 10);

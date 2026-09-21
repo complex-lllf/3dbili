@@ -1,9 +1,16 @@
+// 让 newlib 暴露 POSIX 目录接口（opendir/readdir/closedir）
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include "download.h"
 #include "http.h"
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <dirent.h>
 
 DownloadManager& DownloadManager::Instance() {
     static DownloadManager instance;
@@ -90,17 +97,12 @@ void DownloadManager::CancelDownload() {
 void DownloadManager::DownloadThreadFunc(void* arg) {
     DownloadManager* self = (DownloadManager*)arg;
 
-    // 进度回调桥接
-    auto progressCb = [self](size_t current, size_t total) {
+    // 进度回调桥接（std::function 支持捕获 self）
+    HttpProgressCallback progressCb = [self](size_t current, size_t total) {
         self->m_currentTask.downloadedBytes = current;
         self->m_currentTask.totalBytes = total;
         if (self->m_progressCallback) {
             self->m_progressCallback(current, total);
-        }
-        // 检查取消标志
-        if (self->m_shouldCancel) {
-            // 通过抛出异常或直接返回中断下载（此处简单处理：httpc 的读取循环会持续，
-            // 实际项目中需要更精细的中断机制。这里我们接受下载完成后再检查取消）
         }
     };
 

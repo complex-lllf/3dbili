@@ -3,6 +3,7 @@
 #include <3ds.h>
 #include <string>
 #include <vector>
+#include <functional>
 
 // HTTP 请求封装模块
 // 职责：封装 libctru httpc 服务，提供 GET 请求与文件下载能力
@@ -26,9 +27,12 @@ void Http_SetHeaders(const std::string& userAgent, const std::string& referer);
 // 发起 GET 请求，返回文本响应
 HttpResponse Http_Get(const std::string& url, const std::vector<std::string>& extraHeaders = {});
 
-// 发起 GET 请求，返回二进制数据（用于下载图片、视频）
+// 进度回调类型（用 std::function 以支持 lambda 捕获）
+using HttpProgressCallback = std::function<void(size_t current, size_t total)>;
+
+// 发起 GET 请求并下载到文件（用于下载视频）
 HttpResponse Http_DownloadToFile(const std::string& url, const std::string& filePath,
-                                  void (*progressCallback)(size_t current, size_t total) = nullptr);
+                                 HttpProgressCallback progressCallback = nullptr);
 
 // 下载到内存（用于封面缩略图）
 HttpResponse Http_DownloadToMemory(const std::string& url);
