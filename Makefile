@@ -81,6 +81,7 @@ BANNER_BIN  := $(TARGET)-banner.bnr
 ICON_BIN    := $(TARGET)-icon.icn
 
 # devkitPro 工具绝对路径（不依赖 PATH）
+# bannertool 和 makerom 需要手动安装到 DEVKITPRO/tools/bin/
 BANNERTOOL  := $(DEVKITPRO)/tools/bin/bannertool
 MAKEROM     := $(DEVKITPRO)/tools/bin/makerom
 
