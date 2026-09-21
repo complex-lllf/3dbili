@@ -39,34 +39,22 @@ jobs:
       - name: Install build dependencies
         run: |
           apt-get update
-          apt-get install -y make git wget unzip imagemagick
+          apt-get install -y make git imagemagick
+
+      - name: Install bannertool & makerom (via pacman)
+        run: |
+          dkp-pacman -Sy --noconfirm
+          dkp-pacman -S --noconfirm --needed 3ds-tools
+          echo "--- tools/bin contents ---"
+          ls -la /opt/devkitpro/tools/bin/ | grep -E "bannertool|makerom|3dsxtool|smdhtool" || true
 
       - name: Verify toolchain
         run: |
           echo "DEVKITPRO=$DEVKITPRO"
           echo "DEVKITARM=$DEVKITARM"
           $DEVKITARM/bin/arm-none-eabi-g++ --version
-          ls -la $DEVKITPRO/tools/bin/ || true
-
-      - name: Install bannertool & makerom
-        run: |
-          mkdir -p $DEVKITPRO/tools/bin
-
-          # makerom（Project_CTR 官方 Release）
-          wget -q https://github.com/3DSGuy/Project_CTR/releases/download/makerom-v0.18-ubuntu_x86_64/makerom \
-               -O $DEVKITPRO/tools/bin/makerom
-          chmod +x $DEVKITPRO/tools/bin/makerom
-
-          # bannertool（Epicpkmn11 维护分支）
-          wget -q https://github.com/Epicpkmn11/bannertool/releases/download/v1.2.0/bannertool.zip \
-               -O /tmp/bannertool.zip
-          unzip -j /tmp/bannertool.zip "linux-x86_64/bannertool" -d $DEVKITPRO/tools/bin/
-          chmod +x $DEVKITPRO/tools/bin/bannertool
-
-          echo "--- installed tools ---"
-          ls -la $DEVKITPRO/tools/bin/ | grep -E "bannertool|makerom" || true
-          $DEVKITPRO/tools/bin/makerom -h 2>&1 | head -3 || true
-          $DEVKITPRO/tools/bin/bannertool 2>&1 | head -3 || true
+          /opt/devkitpro/tools/bin/makerom -h 2>&1 | head -3 || true
+          /opt/devkitpro/tools/bin/bannertool 2>&1 | head -3 || true
 
       - name: Ensure meta assets
         run: |
