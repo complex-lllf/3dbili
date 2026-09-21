@@ -3,18 +3,15 @@ name: Build 3DS Homebrew
 on:
   push:
     branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
-  release:
-    types: [ published ]
-  workflow_dispatch:
+  workflow_dispatch:      # 支持手动点击运行
+
+permissions:
+  contents: write         # 创建 tag / Release 必需
 
 env:
-  # devkitPro 官方容器中的工具链路径
   DEVKITPRO: /opt/devkitpro
   DEVKITARM: /opt/devkitpro/devkitARM
   DEVKITPPC: /opt/devkitpro/devkitPPC
-  # 将工具链 bin 目录加入 PATH，保证 make 能直接调用 arm-none-eabi-* 等
   PATH: /opt/devkitpro/tools/bin:/opt/devkitpro/devkitARM/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 jobs:
@@ -27,6 +24,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
+          fetch-depth: 0       # 需要完整历史以便打 tag
           submodules: recursive
 
       - name: Install build dependencies
@@ -37,10 +35,8 @@ jobs:
       - name: Verify toolchain
         run: |
           echo "DEVKITPRO=$DEVKITPRO"
-          echo "DEVKITARM=$DEVKITARM"
           which arm-none-eabi-g++
           arm-none-eabi-g++ --version
-          ls $DEVKITPRO/libctru/lib | head
 
       - name: Build
         run: make -j$(nproc)
@@ -57,10 +53,81 @@ jobs:
           name: bilibili-3ds-smdh
           path: bilibili-3ds.smdh
 
-      - name: Upload to Release
-        if: github.event_name == 'release'
-        uses: softprops/action-gh-release@v1
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
         with:
+          fetch-depth: 0
+
+      - name: Compute date tag
+        id: tag
+        run: |
+          # 生成 3dbili-YYYYMMDD，如 3dbili-20260921
+          BASE="3dbili-$(date -u +'%Y%m%d')"
+          TAG="$BASE"
+          # 如果今天已经发布过，追加 -N 后缀避免冲突
+          N=1
+          while git ls-remote --tags origin "refs/tags/$TAG" | grep -q "$TAG"; do
+            N=$((N+1))
+            TAG="${BASE}-${N}"
+          done
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Resolved tag: $TAG"
+
+      - name: Create and push tag
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag "${{ steps.tag.outputs.tag }}"
+          git push origin "${{ steps.tag.outputs.tag }}"
+
+      - name: Download 3DSX artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: bilibili-3ds-3dsx
+          path: dist
+
+      - name: Download SMDH artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: bilibili-3ds-smdh
+          path: dist
+
+      - name: List artifacts
+        run: ls -la dist
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: "3dbili ${{ steps.tag.outputs.tag }}"
+          body: |
+            ## 3dbili ${{ steps.tag.outputs.tag }}
+
+            自动构建于 `$(date -u +'%Y-%m-%d %H:%M:%S UTC')`
+            Commit: `${{ github.sha }}`
+
+            ### 文件说明
+            - `bilibili-3ds.3dsx` —— Homebrew 可执行文件
+            - `bilibili-3ds.smdh` —— 图标与元数据
+
+            ### 部署
+            将 `.3dsx` 放入 SD 卡 `/3ds/bilibili-3ds/`，通过 Homebrew Launcher 启动。
+
+            ### 已知限制
+            - 3DS 原生 httpc 不支持 HTTPS，B站 API 需自建 HTTP→HTTPS 代理
+            - 封面暂显示为占位方块（JPEG 解码待集成）
           files: |
-            bilibili-3ds.3dsx
-            bilibili-3ds.smdh
+            dist/bilibili-3ds.3dsx
+            dist/bilibili-3ds.smdh
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
