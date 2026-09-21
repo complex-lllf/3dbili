@@ -26,9 +26,11 @@
 
 #include <stddef.h>
 
+/* ===== 修复：默认使用 static，避免多 TU 包含导致 multiple definition ===== */
 #ifndef JSMN_STATIC
 #define JSMN_STATIC
 #endif
+/* ====================================================================== */
 
 #ifdef __cplusplus
 extern "C" {
@@ -97,8 +99,7 @@ JSMN_API void jsmn_init(jsmn_parser *parser);
 
 /**
  * Run JSON parser. It parses a JSON data string into and array of tokens, each
- * describing
- * a single JSON object.
+ * describing a single JSON object.
  */
 JSMN_API int jsmn_parse(jsmn_parser *parser, const char *js, const size_t len,
                         jsmntok_t *tokens, const unsigned int num_tokens);

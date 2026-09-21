@@ -9,6 +9,7 @@ UIManager::UIManager()
     : m_topTarget(nullptr), m_bottomTarget(nullptr), m_font(nullptr),
       m_screenWidth(400.0f), m_screenHeight(240.0f),
       m_selectedIndex(0), m_scrollOffset(0), m_resultCount(0) {
+    m_font = nullptr;
 }
 
 UIManager::~UIManager() {
@@ -16,6 +17,7 @@ UIManager::~UIManager() {
 }
 
 bool UIManager::Init() {
+    if (m_initialized) return true;
     if (!C2D_Init(C2D_DEFAULT_MAX_OBJECTS)) {
         LOGF("C2D_Init failed\n");
         return false;
@@ -25,18 +27,25 @@ bool UIManager::Init() {
     m_topTarget = C2D_CreateScreenTarget(GFX_TOP, GFX_LEFT);
     m_bottomTarget = C2D_CreateScreenTarget(GFX_BOTTOM, GFX_LEFT);
 
-    // TextBuf 需要足够大：每帧要画十余处文字（含中文标题），8192 字节远远不够
-    // 一旦 C2D_TextParse 因缓冲区满失败，后续 C2D_DrawText 会写入 NULL 指针导致崩溃
+    // 【关键修复】TextBuf 需要足够大：每帧要画十余处文字（含中文标题），
+    // 4096 字节远远不够，一旦 C2D_TextParse 因缓冲区满失败，
+    // 后续 C2D_DrawText 会写入 NULL 指针导致 Data Abort。
+    // 这里增大到 65536 字节。
     m_textBuf = C2D_TextBufNew(65536);
     if (!m_textBuf) {
         LOGF("C2D_TextBufNew failed\n");
         return false;
     }
+
+    m_initialized = true;
     LOGF("UI initialized\n");
     return true;
 }
 
 void UIManager::Exit() {
+    if (!m_initialized) return; // 【修复】防止重复清理
+    m_initialized = false;
+
     ClearTextures();
     if (m_textBuf) {
         C2D_TextBufDelete(m_textBuf);
@@ -100,6 +109,8 @@ void UIManager::Render(AppState state, const std::string& searchQuery,
                        const std::vector<VideoSearchItem>& results,
                        const DownloadTask& downloadTask,
                        const std::vector<std::string>& downloadedFiles) {
+    if (!m_initialized) return;
+
     C2D_TextBufClear(m_textBuf);
 
     C3D_FrameBegin(C3D_FRAME_SYNCDRAW);
@@ -160,6 +171,13 @@ void UIManager::DrawResultsList(const std::vector<VideoSearchItem>& results) {
     float y = 40.0f;
     const float itemHeight = 50.0f;
     int visibleCount = (int)((m_screenHeight - 40) / itemHeight);
+
+    // 【修复】根据 m_selectedIndex 动态调整 m_scrollOffset，防止越界访问
+    if (m_selectedIndex < m_scrollOffset) {
+        m_scrollOffset = m_selectedIndex;
+    } else if (m_selectedIndex >= m_scrollOffset + visibleCount) {
+        m_scrollOffset = m_selectedIndex - visibleCount + 1;
+    }
 
     int startIdx = m_scrollOffset;
     int endIdx = startIdx + visibleCount;
@@ -264,6 +282,8 @@ int UIManager::HandleInput() {
     if (kDown & KEY_A) return 1;
     if (kDown & KEY_B) return 2;
     if (kDown & KEY_Y) return 3;
+
+    // 【修复】优先处理 kDown，再处理 kHeld，避免逻辑冲突
     if (kDown & KEY_DOWN) {
         if (m_resultCount > 0 && m_selectedIndex + 1 < m_resultCount) {
             m_selectedIndex++;

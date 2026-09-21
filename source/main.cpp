@@ -17,13 +17,6 @@
 // 【重要】3DS 原生 httpc 不支持 TLS 1.2，B站接口已全面 HTTPS + 强制 WBI 签名，
 // 必须通过自建 HTTP→HTTPS 代理转发。
 // 下面端点仅为占位示例，实际部署时请把 YOUR_PROXY 替换为自建代理地址。
-//
-// B站当前有效接口（供代理端参考）：
-//   搜索:    https://api.bilibili.com/x/web-interface/wbi/search/type
-//   详情:    https://api.bilibili.com/x/web-interface/view?bvid=...
-//   播放地址: https://api.bilibili.com/x/player/wbi/playurl
-// 全部需要 w_rid / wts（WBI 签名）与有效 Cookie（SESSDATA / bili_jct）。
-
 static const char* SEARCH_API = "http://YOUR_PROXY/x/web-interface/search/type"
                                 "?search_type=video&keyword=%s&page=1";
 
@@ -149,8 +142,6 @@ std::string OpenKeyboard(const std::string& initialText) {
 
 int main(int argc, char** argv) {
     // 初始化文件系统服务
-    //   - 3dsx 环境：sdmc: 会随 gfxInitDefault 自动可用，但仍可安全调用 fsInit
-    //   - CIA 环境：必须调用 fsInit() 才会挂载 sdmc:，否则所有 sdmc:/... 路径均失败
     fsInit();
 
     romfsInit();
@@ -241,6 +232,14 @@ int main(int argc, char** argv) {
             }
 
             case AppState::DOWNLOADING: {
+                // 【修复】增加取消下载逻辑
+                if (event == 2) {
+                    DownloadManager::Instance().CancelDownload();
+                    g_appState.store(AppState::RESULTS);
+                    g_statusMessage = "Download cancelled.";
+                    break;
+                }
+
                 DownloadTask task = DownloadManager::Instance().GetCurrentTask();
                 if (task.isComplete) {
                     g_appState.store(AppState::DOWNLOADED);
@@ -272,6 +271,9 @@ int main(int argc, char** argv) {
             running = false;
         }
 
+        // 回收已自然结束的下载线程句柄，防止句柄泄漏
+        DownloadManager::Instance().CleanupThreadIfDone();
+
         // 按值获取任务快照，内部加锁
         DownloadTask task = DownloadManager::Instance().GetCurrentTask();
         ui.Render(g_appState.load(), g_searchQuery, g_searchResults, task, g_downloadedFiles);
@@ -279,6 +281,7 @@ int main(int argc, char** argv) {
 
     LOGF("=== 3dbili shutting down ===\n");
     DownloadManager::Instance().CancelDownload();
+    DownloadManager::Instance().CleanupThreadIfDone();
     ui.Exit();
     Http_Exit();
     hidExit();

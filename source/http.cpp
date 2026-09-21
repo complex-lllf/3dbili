@@ -11,7 +11,7 @@ static bool s_httpInitialized  = false;
 
 bool Http_Init() {
     if (s_httpInitialized) return true;
-    // 【修复】GET 请求不需要 sharedmem，传 0 即可
+    // GET 请求不需要 sharedmem，传 0 即可
     Result rc = httpcInit(0);
     if (R_FAILED(rc)) {
         LOGF("httpcInit failed: 0x%08lX\n", (unsigned long)rc);
@@ -110,7 +110,6 @@ HttpResponse Http_Get(const std::string& url, const std::vector<std::string>& ex
 
     if (status == 200) {
         size_t total = Http_GetContentLength(&ctx);
-        // 【修复】total 为 0 时直接返回，避免无意义分配与未定义行为
         if (total == 0 || total > 8 * 1024 * 1024) {
             LOGF("  abnormal content length: %lu, aborting\n", (unsigned long)total);
             httpcCloseContext(&ctx);
@@ -232,6 +231,8 @@ HttpResponse Http_DownloadToFile(const std::string& url, const std::string& file
         if (R_FAILED(rc)) {
             lastRc = rc;
             hadError = true;
+            // 【修复】先取消连接，再关闭上下文，防止底层死锁或异常
+            httpcCancelConnection(&ctx);
             LOGF("  httpcDownloadData failed: 0x%08lX\n", (unsigned long)rc);
             finished = true;
             break;
@@ -272,6 +273,9 @@ HttpResponse Http_DownloadToFile(const std::string& url, const std::string& file
         LOGF("  no data downloaded for %s (rc=0x%08lX)\n",
              url.c_str(), (unsigned long)lastRc);
     }
+
+    // 【修复】消除 warning：显式忽略未使用变量
+    (void)lastRc;
 
     return resp;
 }

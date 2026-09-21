@@ -6,6 +6,7 @@
 #include <cstdio>
 
 static const int MAX_TOKENS = 16384;
+static const int MAX_SKIP_DEPTH = 100; // 【修复】防止递归栈溢出
 
 int JsonParser::Parse(const std::string& json) {
     jsmn_parser parser;
@@ -13,7 +14,6 @@ int JsonParser::Parse(const std::string& json) {
 
     m_tokens.resize(MAX_TOKENS);
     // 【修复】清零 token 内存，防止 jsmn 在畸形 JSON 下读取未初始化字段
-    // 参考：DCMTK Bug #1197 (CWE-908 Use of Uninitialized Resource)
     memset(m_tokens.data(), 0, MAX_TOKENS * sizeof(JsonToken));
 
     int r = jsmn_parse(&parser, json.c_str(), json.length(),
@@ -31,12 +31,17 @@ int JsonParser::Parse(const std::string& json) {
 }
 
 // 【修复】跳过 token 及其所有子孙节点，返回下一个兄弟节点的索引
-int JsonParser::SkipToken(int tokenIndex) const {
+// 增加 depth 限制，防止畸形 JSON 导致无限递归/栈溢出
+int JsonParser::SkipToken(int tokenIndex, int depth) const {
+    if (depth > MAX_SKIP_DEPTH) {
+        LOGF("SkipToken depth limit reached\n");
+        return m_tokenCount;
+    }
     if (tokenIndex < 0 || tokenIndex >= m_tokenCount) return m_tokenCount;
     int next = tokenIndex + 1;
     int size = m_tokens[tokenIndex].size;
     for (int i = 0; i < size; i++) {
-        next = SkipToken(next);
+        next = SkipToken(next, depth + 1);
     }
     return next;
 }

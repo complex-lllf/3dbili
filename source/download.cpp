@@ -35,10 +35,6 @@ DownloadManager::~DownloadManager() {
 
 // ---------------------------------------------------------------------------
 // 目录创建：标准 mkdir 优先，失败时回退到 FSUSER_CreateDirectory
-//
-// 关键点：FSUSER_CreateDirectory 接收的路径是「相对于已打开归档根」的路径，
-//        不能带 "sdmc:" 前缀。之前的 "sdmc:/3dbili" 在部分 libctru 版本下
-//        会返回无效路径错误，导致 CIA 环境建目录失败。
 // ---------------------------------------------------------------------------
 bool DownloadManager::EnsureDir(const char* path) {
     struct stat st;
@@ -88,9 +84,6 @@ bool DownloadManager::Init() {
 
 // ---------------------------------------------------------------------------
 // 文件名净化
-//
-// 截断时按 UTF-8 边界回退：从 cut 位置向前扫描，直到落在字符首字节
-// （非 10xxxxxx 续字节）为止。使用 <= 保证索引不越界。
 // ---------------------------------------------------------------------------
 std::string SanitizeFilename(const std::string& name) {
     std::string result = name;
@@ -106,7 +99,7 @@ std::string SanitizeFilename(const std::string& name) {
         while (cut > 0 && (static_cast<unsigned char>(result[cut]) & 0xC0) == 0x80) {
             cut--;
         }
-        // 若回退到 0（全部是续字节，理论上不会发生），退回一个字符
+        // 若回退到 0（理论上不会发生），退回一个字符
         if (cut == 0) cut = MAX_BYTES;
         result = result.substr(0, cut);
     }
@@ -117,13 +110,6 @@ std::string SanitizeFilename(const std::string& name) {
 
 // ---------------------------------------------------------------------------
 // 线程句柄回收
-//
-// 下载自然完成后，DownloadThreadFunc 只是把 m_isDownloading 置 false，
-// 并不会释放 thread 句柄（线程不能 free 自己）。若不回收：
-//   - 每次成功下载都会泄漏一个线程句柄
-//   - 3DS 内核对象数量有限，下载十几次后 threadCreate 开始返回 NULL
-//
-// 本函数由主线程在合适时机调用（主循环每帧，或 StartDownload 前置）。
 // ---------------------------------------------------------------------------
 void DownloadManager::CleanupThreadIfDone() {
     if (m_thread == nullptr) return;
@@ -194,18 +180,22 @@ DownloadTask DownloadManager::GetCurrentTask() const {
 
 // ---------------------------------------------------------------------------
 // 取消下载
-//
-// 不依赖 m_isDownloading 作为前置条件——线程可能已经自然结束但句柄未回收，
-// 这时也应该走 join + free。用 m_thread 的存在性作为判断依据。
 // ---------------------------------------------------------------------------
 void DownloadManager::CancelDownload() {
     m_shouldCancel.store(true);
 
     if (m_thread) {
-        // 若线程仍在跑，给它最多 2 秒优雅退出
-        threadJoin(m_thread, DOWNLOAD_JOIN_TIMEOUT_NS);
-        threadFree(m_thread);
-        m_thread = nullptr;
+        // 【关键修复】若线程仍在跑，给它最多 2 秒优雅退出。
+        // 如果超时，绝对不能立即 threadFree，否则线程仍在使用 this 指针，
+        // 会导致 Use-After-Free，表现为向 0x00000008 写入数据导致 Data Abort。
+        Result rc = threadJoin(m_thread, DOWNLOAD_JOIN_TIMEOUT_NS);
+        if (R_SUCCEEDED(rc)) {
+            threadFree(m_thread);
+            m_thread = nullptr;
+        } else {
+            LOGF("cancel timeout, thread still running. Will cleanup later.\n");
+            // 不释放，留给 CleanupThreadIfDone 处理
+        }
     }
 
     m_isDownloading.store(false);
@@ -217,8 +207,7 @@ void DownloadManager::CancelDownload() {
 void DownloadManager::DownloadThreadFunc(void* arg) {
     DownloadManager* self = static_cast<DownloadManager*>(arg);
 
-    // 进度回调：单次加锁完成「写进度」+「取回调副本」，避免两次锁之间
-    // 与 SetProgressCallback 竞争。
+    // 进度回调：单次加锁完成「写进度」+「取回调副本」
     HttpProgressCallback progressCb = [self](size_t current, size_t total) {
         std::function<void(size_t, size_t)> cb;
         LightLock_Lock(&self->m_taskLock);
@@ -279,11 +268,15 @@ std::vector<std::string> DownloadManager::GetDownloadedFiles() const {
         std::string name = entry->d_name;
         if (name == "." || name == "..") continue;
 
-        // 跳过子目录
-        if (entry->d_type == DT_DIR) continue;
+        // 【修复】d_type 在 FAT/exFAT 上可能不可靠，改用 stat 检测子目录
+        std::string fullPath = std::string(DOWN_DIR) + "/" + name;
+        struct stat st;
+        if (stat(fullPath.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
+            continue;
+        }
 
         if (name.size() > 4 && name.substr(name.size() - 4) == ".mp4") {
-            files.push_back(std::string(DOWN_DIR) + "/" + name);
+            files.push_back(fullPath);
         }
     }
     closedir(dir);

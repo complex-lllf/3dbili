@@ -39,7 +39,8 @@ public:
 
 private:
     // 跳过 token 及其所有子孙节点，返回下一个兄弟节点的索引
-    int SkipToken(int tokenIndex) const;
+    // 【修复】增加 depth 参数，限制递归深度，防止栈溢出
+    int SkipToken(int tokenIndex, int depth = 0) const;
 
     std::vector<JsonToken> m_tokens;
     int m_tokenCount = 0;

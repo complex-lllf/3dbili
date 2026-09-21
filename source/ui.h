@@ -47,6 +47,8 @@ private:
     C2D_TextBuf m_textBuf;
     C2D_Font m_font;
 
+    bool m_initialized = false; // 【修复】防止重复初始化/清理
+
     float m_screenWidth;
     float m_screenHeight;
 
