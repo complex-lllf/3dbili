@@ -52,6 +52,7 @@ private:
 
     int m_selectedIndex;
     int m_scrollOffset;
+    int m_resultCount;   // 当前结果总数，用于限制 selectedIndex 上限
 
     struct CoverEntry {
         std::string url;
