@@ -80,6 +80,10 @@ SMDH        := $(TARGET).smdh
 BANNER_BIN  := $(TARGET)-banner.bnr
 ICON_BIN    := $(TARGET)-icon.icn
 
+# devkitPro 工具绝对路径（不依赖 PATH）
+BANNERTOOL  := $(DEVKITPRO)/tools/bin/bannertool
+MAKEROM     := $(DEVKITPRO)/tools/bin/makerom
+
 .PHONY: $(BUILD) clean all 3dsx cia
 
 #---------------------------------------------------------------------------------
@@ -101,11 +105,11 @@ $(BUILD):
 #---------------------------------------------------------------------------------
 $(TARGET).cia: $(TARGET).elf $(BANNER) $(ICON) $(RSF)
 	@echo "building cia ..."
-	bannertool makebanner -i $(BANNER) -o $(BANNER_BIN)
-	bannertool makesmdh -s "3dbili" -l "Bilibili 3DS Client" -p "AI generated" \
-	                    -i $(ICON) -o $(ICON_BIN)
-	makerom -f cia -o $(TARGET).cia -target t -exefslogo \
-	        -elf $(TARGET).elf -icon $(ICON_BIN) -banner $(BANNER_BIN) -rsf $(RSF)
+	$(BANNERTOOL) makebanner -i $(BANNER) -o $(BANNER_BIN)
+	$(BANNERTOOL) makesmdh -s "3dbili" -l "Bilibili 3DS Client" \
+	    -p "AI generated" -i $(ICON) -o $(ICON_BIN)
+	$(MAKEROM) -f cia -o $(TARGET).cia -target t -exefslogo \
+	    -elf $(TARGET).elf -icon $(ICON_BIN) -banner $(BANNER_BIN) -rsf $(RSF)
 
 #---------------------------------------------------------------------------------
 clean:
