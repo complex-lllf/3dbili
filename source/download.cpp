@@ -1,4 +1,3 @@
-// 让 newlib 暴露 POSIX 目录接口
 #ifndef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
 #endif
@@ -12,6 +11,13 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <dirent.h>
+#include <3ds.h>
+
+// 线程栈：32KB。8192*2=16KB 太小，下载线程调用链中包含
+// std::function / std::string 拷贝与 HTTP 缓冲区，容易栈溢出。
+static constexpr int DOWNLOAD_THREAD_STACK = 32 * 1024;
+static constexpr s32 DOWNLOAD_THREAD_PRIO  = 0x30;
+static constexpr u64 DOWNLOAD_JOIN_TIMEOUT_NS = 2000000000ULL; // 2s
 
 DownloadManager& DownloadManager::Instance() {
     static DownloadManager instance;
@@ -24,41 +30,122 @@ DownloadManager::DownloadManager() {
 
 DownloadManager::~DownloadManager() {
     CancelDownload();
+    CleanupThreadIfDone();
+}
+
+// ---------------------------------------------------------------------------
+// 目录创建：标准 mkdir 优先，失败时回退到 FSUSER_CreateDirectory
+//
+// 关键点：FSUSER_CreateDirectory 接收的路径是「相对于已打开归档根」的路径，
+//        不能带 "sdmc:" 前缀。之前的 "sdmc:/3dbili" 在部分 libctru 版本下
+//        会返回无效路径错误，导致 CIA 环境建目录失败。
+// ---------------------------------------------------------------------------
+bool DownloadManager::EnsureDir(const char* path) {
+    struct stat st;
+    if (stat(path, &st) == 0) return true;
+
+    // 先尝试标准 mkdir（devkitARM 下 newlib 通常能正确处理 sdmc: 前缀）
+    if (mkdir(path, 0777) == 0) return true;
+
+    // 回退：打开 SDMC 根归档，用相对路径创建
+    FS_Archive sdArch;
+    Result rc = FSUSER_OpenArchive(&sdArch, ARCHIVE_SDMC,
+                                   fsMakePath(PATH_EMPTY, ""));
+    if (R_FAILED(rc)) {
+        LOGF("FSUSER_OpenArchive failed: 0x%08lX\n", (unsigned long)rc);
+        return false;
+    }
+
+    // 去掉可能的 "sdmc:" 前缀，得到相对归档根的路径
+    const char* rel = path;
+    if (strncmp(path, "sdmc:", 5) == 0) rel = path + 5;
+    if (rel[0] == '\0') rel = "/";
+
+    rc = FSUSER_CreateDirectory(sdArch, fsMakePath(PATH_ASCII, rel), 0);
+    FSUSER_CloseArchive(sdArch);
+
+    // 0xC82044BE = FSUSER_DIRECTORY_ALREADY_EXISTS
+    if (R_SUCCEEDED(rc) || (u32)rc == 0xC82044BE) {
+        return true;
+    }
+
+    LOGF("FSUSER_CreateDirectory(%s) failed: 0x%08lX\n",
+         rel, (unsigned long)rc);
+    return false;
 }
 
 bool DownloadManager::Init() {
-    struct stat st;
-
-    if (stat(SD_DIR, &st) != 0) {
-        mkdir(SD_DIR, 0777);
-        LOGF("created directory %s\n", SD_DIR);
+    if (!EnsureDir(SD_DIR)) {
+        LOGF("failed to create %s\n", SD_DIR);
+        return false;
     }
-    if (stat(DOWN_DIR, &st) != 0) {
-        mkdir(DOWN_DIR, 0777);
-        LOGF("created directory %s\n", DOWN_DIR);
+    if (!EnsureDir(DOWN_DIR)) {
+        LOGF("failed to create %s\n", DOWN_DIR);
+        return false;
     }
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// 文件名净化
+//
+// 截断时按 UTF-8 边界回退：从 cut 位置向前扫描，直到落在字符首字节
+// （非 10xxxxxx 续字节）为止。使用 <= 保证索引不越界。
+// ---------------------------------------------------------------------------
 std::string SanitizeFilename(const std::string& name) {
     std::string result = name;
     const char* illegal = "/\\:*?\"<>|";
     for (char& c : result) {
         if (strchr(illegal, c)) c = '_';
     }
-    if (result.size() > 80) {
-        result = result.substr(0, 80);
+
+    const size_t MAX_BYTES = 80;
+    if (result.size() > MAX_BYTES) {
+        size_t cut = MAX_BYTES;
+        // 向前回退到字符首字节；cut 最多降到 0
+        while (cut > 0 && (static_cast<unsigned char>(result[cut]) & 0xC0) == 0x80) {
+            cut--;
+        }
+        // 若回退到 0（全部是续字节，理论上不会发生），退回一个字符
+        if (cut == 0) cut = MAX_BYTES;
+        result = result.substr(0, cut);
     }
+
     if (result.empty()) result = "untitled";
     return result;
 }
 
+// ---------------------------------------------------------------------------
+// 线程句柄回收
+//
+// 下载自然完成后，DownloadThreadFunc 只是把 m_isDownloading 置 false，
+// 并不会释放 thread 句柄（线程不能 free 自己）。若不回收：
+//   - 每次成功下载都会泄漏一个线程句柄
+//   - 3DS 内核对象数量有限，下载十几次后 threadCreate 开始返回 NULL
+//
+// 本函数由主线程在合适时机调用（主循环每帧，或 StartDownload 前置）。
+// ---------------------------------------------------------------------------
+void DownloadManager::CleanupThreadIfDone() {
+    if (m_thread == nullptr) return;
+    if (m_isDownloading.load()) return;  // 还在跑，别动
+
+    // timeout=0：只回收已结束的线程，绝不阻塞
+    threadJoin(m_thread, 0);
+    threadFree(m_thread);
+    m_thread = nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// 启动下载
+// ---------------------------------------------------------------------------
 bool DownloadManager::StartDownload(const std::string& bvid, const std::string& title,
                                     const std::string& directUrl) {
-    if (m_isDownloading) return false;
+    if (m_isDownloading.load()) return false;
     if (directUrl.empty()) return false;
 
-    std::string safeName;
+    // 启动前顺手回收上一次遗留的线程句柄，避免堆叠
+    CleanupThreadIfDone();
+
     std::string outputPath;
 
     LightLock_Lock(&m_taskLock);
@@ -71,7 +158,7 @@ bool DownloadManager::StartDownload(const std::string& bvid, const std::string& 
     m_currentTask.isFailed = false;
     m_currentTask.errorMsg.clear();
 
-    safeName = SanitizeFilename(title);
+    std::string safeName = SanitizeFilename(title);
     m_currentTask.outputPath = std::string(DOWN_DIR) + "/" + safeName + ".mp4";
     outputPath = m_currentTask.outputPath;
     LightLock_Unlock(&m_taskLock);
@@ -79,14 +166,15 @@ bool DownloadManager::StartDownload(const std::string& bvid, const std::string& 
     LOGF("start download: bvid=%s -> %s\n", bvid.c_str(), outputPath.c_str());
     LOGF("  direct url: %s\n", directUrl.c_str());
 
-    m_shouldCancel = false;
-    m_isDownloading = true;
+    m_shouldCancel.store(false);
+    m_isDownloading.store(true);
 
-    s32 prio = 0x30;
-    m_thread = threadCreate(DownloadThreadFunc, this, 8192 * 2, prio, -1, false);
+    m_thread = threadCreate(DownloadThreadFunc, this,
+                            DOWNLOAD_THREAD_STACK, DOWNLOAD_THREAD_PRIO,
+                            -1, false);
     if (!m_thread) {
         LOGF("failed to create download thread\n");
-        m_isDownloading = false;
+        m_isDownloading.store(false);
         LightLock_Lock(&m_taskLock);
         m_currentTask.isFailed = true;
         m_currentTask.errorMsg = "Failed to create download thread";
@@ -104,42 +192,54 @@ DownloadTask DownloadManager::GetCurrentTask() const {
     return copy;
 }
 
+// ---------------------------------------------------------------------------
+// 取消下载
+//
+// 不依赖 m_isDownloading 作为前置条件——线程可能已经自然结束但句柄未回收，
+// 这时也应该走 join + free。用 m_thread 的存在性作为判断依据。
+// ---------------------------------------------------------------------------
 void DownloadManager::CancelDownload() {
-    if (m_isDownloading) {
-        m_shouldCancel = true;
-        if (m_thread) {
-            threadJoin(m_thread, 2000000000);
-            threadFree(m_thread);
-            m_thread = nullptr;
-        }
+    m_shouldCancel.store(true);
+
+    if (m_thread) {
+        // 若线程仍在跑，给它最多 2 秒优雅退出
+        threadJoin(m_thread, DOWNLOAD_JOIN_TIMEOUT_NS);
+        threadFree(m_thread);
+        m_thread = nullptr;
     }
-    m_isDownloading = false;
+
+    m_isDownloading.store(false);
 }
 
+// ---------------------------------------------------------------------------
+// 下载线程主体
+// ---------------------------------------------------------------------------
 void DownloadManager::DownloadThreadFunc(void* arg) {
-    DownloadManager* self = (DownloadManager*)arg;
+    DownloadManager* self = static_cast<DownloadManager*>(arg);
 
+    // 进度回调：单次加锁完成「写进度」+「取回调副本」，避免两次锁之间
+    // 与 SetProgressCallback 竞争。
     HttpProgressCallback progressCb = [self](size_t current, size_t total) {
+        std::function<void(size_t, size_t)> cb;
         LightLock_Lock(&self->m_taskLock);
         self->m_currentTask.downloadedBytes = current;
         self->m_currentTask.totalBytes = total;
+        cb = self->m_progressCallback;
         LightLock_Unlock(&self->m_taskLock);
-
-        if (self->m_progressCallback) {
-            self->m_progressCallback(current, total);
-        }
+        if (cb) cb(current, total);
     };
 
-    // 拷贝需要的字段，避免后续访问 m_currentTask 时与其他线程竞争
+    // 拷贝任务字段，避免下载中与其他线程读写 m_currentTask 竞争
+    std::string url, path;
     LightLock_Lock(&self->m_taskLock);
-    std::string url  = self->m_currentTask.directUrl;
-    std::string path = self->m_currentTask.outputPath;
+    url  = self->m_currentTask.directUrl;
+    path = self->m_currentTask.outputPath;
     LightLock_Unlock(&self->m_taskLock);
 
     HttpResponse resp = Http_DownloadToFile(url, path, progressCb);
 
     LightLock_Lock(&self->m_taskLock);
-    if (self->m_shouldCancel) {
+    if (self->m_shouldCancel.load()) {
         self->m_currentTask.isFailed = true;
         self->m_currentTask.errorMsg = "Cancelled";
         LightLock_Unlock(&self->m_taskLock);
@@ -157,9 +257,14 @@ void DownloadManager::DownloadThreadFunc(void* arg) {
         LOGF("download failed\n");
     }
 
-    self->m_isDownloading = false;
+    // 只置位，不在这里 free 自己的句柄（线程不能 free 自己）。
+    // 由主线程调用 CleanupThreadIfDone() 或下一次 StartDownload 回收。
+    self->m_isDownloading.store(false);
 }
 
+// ---------------------------------------------------------------------------
+// 枚举已下载文件
+// ---------------------------------------------------------------------------
 std::vector<std::string> DownloadManager::GetDownloadedFiles() const {
     std::vector<std::string> files;
 
@@ -173,6 +278,9 @@ std::vector<std::string> DownloadManager::GetDownloadedFiles() const {
     while ((entry = readdir(dir)) != nullptr) {
         std::string name = entry->d_name;
         if (name == "." || name == "..") continue;
+
+        // 跳过子目录
+        if (entry->d_type == DT_DIR) continue;
 
         if (name.size() > 4 && name.substr(name.size() - 4) == ".mp4") {
             files.push_back(std::string(DOWN_DIR) + "/" + name);

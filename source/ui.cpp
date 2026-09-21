@@ -3,6 +3,7 @@
 #include "log.h"
 #include <cstring>
 #include <cstdio>
+#include <algorithm>
 
 UIManager::UIManager()
     : m_topTarget(nullptr), m_bottomTarget(nullptr), m_font(nullptr),
@@ -80,6 +81,7 @@ C2D_Image* UIManager::GetCoverTexture(const std::string& url) {
 }
 
 void UIManager::DrawText(const std::string& text, float x, float y, float scale, u32 color) {
+    if (text.empty()) return;
     C2D_Text c2dText;
     // C2D_TextParse 返回 false 时 c2dText 内部指针可能无效，
     // 若继续 C2D_DrawText 会写空指针导致 data abort
@@ -245,16 +247,15 @@ void UIManager::DrawFileList(const std::vector<std::string>& files) {
     }
 }
 
+// 【修复】HandleInput 不再调用 hidScanInput()，改由 main.cpp 统一调用，
+// 避免主循环与 UI 两处各调一次导致按键丢失
 int UIManager::HandleInput() {
-    hidScanInput();
     u32 kDown = hidKeysDown();
     u32 kHeld = hidKeysHeld();
 
-    touchPosition touch;
-    hidTouchRead(&touch);
-    u32 touchKeys = hidKeysDown();
-
-    if (touchKeys & KEY_TOUCH) {
+    if (kDown & KEY_TOUCH) {
+        touchPosition touch;
+        hidTouchRead(&touch);
         if (touch.py >= 0 && touch.py <= 240) {
             return 4;
         }
@@ -264,7 +265,6 @@ int UIManager::HandleInput() {
     if (kDown & KEY_B) return 2;
     if (kDown & KEY_Y) return 3;
     if (kDown & KEY_DOWN) {
-        // 限制索引不越界
         if (m_resultCount > 0 && m_selectedIndex + 1 < m_resultCount) {
             m_selectedIndex++;
         }

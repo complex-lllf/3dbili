@@ -11,7 +11,8 @@ static bool s_httpInitialized  = false;
 
 bool Http_Init() {
     if (s_httpInitialized) return true;
-    Result rc = httpcInit(0x10000); // 64KB 缓冲区
+    // 【修复】GET 请求不需要 sharedmem，传 0 即可
+    Result rc = httpcInit(0);
     if (R_FAILED(rc)) {
         LOGF("httpcInit failed: 0x%08lX\n", (unsigned long)rc);
         return false;
@@ -77,7 +78,6 @@ static Result Http_DoRequest(const std::string& url,
 }
 
 // 内部：获取内容总大小
-// 注意：httpcGetDownloadSizeState 的 out 参数不能为 nullptr
 static size_t Http_GetContentLength(httpcContext* ctx) {
     u32 downloadSize = 0;
     u32 contentSize  = 0;
@@ -110,6 +110,7 @@ HttpResponse Http_Get(const std::string& url, const std::vector<std::string>& ex
 
     if (status == 200) {
         size_t total = Http_GetContentLength(&ctx);
+        // 【修复】total 为 0 时直接返回，避免无意义分配与未定义行为
         if (total == 0 || total > 8 * 1024 * 1024) {
             LOGF("  abnormal content length: %lu, aborting\n", (unsigned long)total);
             httpcCloseContext(&ctx);
@@ -213,6 +214,8 @@ HttpResponse Http_DownloadToFile(const std::string& url, const std::string& file
 
     size_t downloaded = 0;
     bool finished = false;
+    Result lastRc = 0;
+    bool hadError = false;
 
     // 如果 totalSize 为 0，则读到没有数据为止
     while (!finished) {
@@ -225,12 +228,27 @@ HttpResponse Http_DownloadToFile(const std::string& url, const std::string& file
 
         u32 readBytes = 0;
         rc = httpcDownloadData(&ctx, buffer, chunk, &readBytes);
-        if (R_FAILED(rc) || readBytes == 0) {
+        // 【修复】区分传输失败与流结束
+        if (R_FAILED(rc)) {
+            lastRc = rc;
+            hadError = true;
+            LOGF("  httpcDownloadData failed: 0x%08lX\n", (unsigned long)rc);
+            finished = true;
+            break;
+        }
+        if (readBytes == 0) {
             finished = true;
             break;
         }
 
-        fwrite(buffer, 1, readBytes, fp);
+        // 【修复】检查 fwrite 短写
+        size_t written = fwrite(buffer, 1, readBytes, fp);
+        if (written != readBytes) {
+            LOGF("  fwrite short write: %zu/%u\n", written, readBytes);
+            hadError = true;
+            finished = true;
+            break;
+        }
         downloaded += readBytes;
 
         if (progressCallback) progressCallback(downloaded, totalSize);
@@ -245,13 +263,14 @@ HttpResponse Http_DownloadToFile(const std::string& url, const std::string& file
     fclose(fp);
     httpcCloseContext(&ctx);
 
-    if (downloaded > 0) {
+    if (downloaded > 0 && !hadError) {
         resp.success = true;
         resp.binarySize = downloaded;
         LOGF("  file downloaded: %lu bytes -> %s\n",
              (unsigned long)downloaded, filePath.c_str());
     } else {
-        LOGF("  no data downloaded for %s\n", url.c_str());
+        LOGF("  no data downloaded for %s (rc=0x%08lX)\n",
+             url.c_str(), (unsigned long)lastRc);
     }
 
     return resp;

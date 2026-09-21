@@ -4,6 +4,7 @@
 #include <vector>
 #include <cstdio>
 #include <cctype>
+#include <cstdlib>
 #include <atomic>
 
 #include "http.h"
@@ -13,15 +14,22 @@
 #include "log.h"
 
 // ==================== B站 API 常量 ====================
-// 注意：3DS 原生 httpc 不支持 TLS 1.2，B站 HTTPS 接口无法直接访问。
-// 以下使用 HTTP 端点，或可通过自建代理转发。
+// 【重要】3DS 原生 httpc 不支持 TLS 1.2，B站接口已全面 HTTPS + 强制 WBI 签名，
+// 必须通过自建 HTTP→HTTPS 代理转发。
+// 下面端点仅为占位示例，实际部署时请把 YOUR_PROXY 替换为自建代理地址。
+//
+// B站当前有效接口（供代理端参考）：
+//   搜索:    https://api.bilibili.com/x/web-interface/wbi/search/type
+//   详情:    https://api.bilibili.com/x/web-interface/view?bvid=...
+//   播放地址: https://api.bilibili.com/x/player/wbi/playurl
+// 全部需要 w_rid / wts（WBI 签名）与有效 Cookie（SESSDATA / bili_jct）。
 
-static const char* SEARCH_API = "http://api.bilibili.com/x/web-interface/search/type"
+static const char* SEARCH_API = "http://YOUR_PROXY/x/web-interface/search/type"
                                 "?search_type=video&keyword=%s&page=1";
 
-static const char* VIEW_API = "http://api.bilibili.com/x/web-interface/view?bvid=%s";
+static const char* VIEW_API = "http://YOUR_PROXY/x/web-interface/view?bvid=%s";
 
-static const char* PLAYURL_API = "http://api.bilibili.com/x/player/playurl"
+static const char* PLAYURL_API = "http://YOUR_PROXY/x/player/playurl"
                                  "?bvid=%s&cid=%ld&qn=16&fnval=1&platform=html5";
 
 // ==================== URL 编码 ====================
@@ -29,8 +37,9 @@ std::string UrlEncode(const std::string& input) {
     std::string result;
     char buf[8];
     for (unsigned char c : input) {
-        if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
-            result += c;
+        if (std::isalnum(static_cast<int>(c)) ||
+            c == '-' || c == '_' || c == '.' || c == '~') {
+            result += static_cast<char>(c);
         } else {
             snprintf(buf, sizeof(buf), "%%%02X", c);
             result += buf;
@@ -108,7 +117,7 @@ bool DownloadVideo(const VideoSearchItem& item) {
 
     std::string directUrl = ParsePlayUrlResponse(playResp.body);
     if (directUrl.empty()) {
-        g_statusMessage = "No MP4 URL found (video may be segmented).";
+        g_statusMessage = "No MP4 URL found (video may be DASH-only).";
         return false;
     }
 
@@ -123,9 +132,8 @@ bool DownloadVideo(const VideoSearchItem& item) {
 
 std::string OpenKeyboard(const std::string& initialText) {
     SwkbdState swkbd;
-    char buffer[256] = {0};
+    char buffer[1024] = {0};
 
-    // swkbdInit 返回 void，没有 Result 可检查
     swkbdInit(&swkbd, SWKBD_TYPE_NORMAL, 2, 255);
     swkbdSetHintText(&swkbd, "Enter search keyword...");
     swkbdSetInitialText(&swkbd, initialText.c_str());
@@ -198,6 +206,10 @@ int main(int argc, char** argv) {
 
     bool running = true;
     while (aptMainLoop() && running) {
+        // 【修复】hidScanInput 只在主循环调用一次，
+        // UIManager::HandleInput 内部不再重复调用，避免按键丢失
+        hidScanInput();
+
         int event = ui.HandleInput();
 
         AppState state = g_appState.load();
@@ -255,7 +267,7 @@ int main(int argc, char** argv) {
             }
         }
 
-        hidScanInput();
+        // 退出检测复用同一帧的 hidKeysDown 快照
         if (hidKeysDown() & KEY_START) {
             running = false;
         }
