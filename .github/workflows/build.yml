@@ -1,1 +1,66 @@
+name: Build 3DS Homebrew
 
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  release:
+    types: [ published ]
+  workflow_dispatch:
+
+env:
+  # devkitPro 官方容器中的工具链路径
+  DEVKITPRO: /opt/devkitpro
+  DEVKITARM: /opt/devkitpro/devkitARM
+  DEVKITPPC: /opt/devkitpro/devkitPPC
+  # 将工具链 bin 目录加入 PATH，保证 make 能直接调用 arm-none-eabi-* 等
+  PATH: /opt/devkitpro/tools/bin:/opt/devkitpro/devkitARM/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: devkitpro/devkitarm:latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y make git
+
+      - name: Verify toolchain
+        run: |
+          echo "DEVKITPRO=$DEVKITPRO"
+          echo "DEVKITARM=$DEVKITARM"
+          which arm-none-eabi-g++
+          arm-none-eabi-g++ --version
+          ls $DEVKITPRO/libctru/lib | head
+
+      - name: Build
+        run: make -j$(nproc)
+
+      - name: Upload 3DSX artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bilibili-3ds-3dsx
+          path: bilibili-3ds.3dsx
+
+      - name: Upload SMDH artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bilibili-3ds-smdh
+          path: bilibili-3ds.smdh
+
+      - name: Upload to Release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            bilibili-3ds.3dsx
+            bilibili-3ds.smdh
