@@ -125,7 +125,9 @@ std::string OpenKeyboard(const std::string& initialText) {
     SwkbdState swkbd;
     char buffer[256] = {0};
 
-    swkbdInit(&swkbd, SWKBD_TYPE_NORMAL, 2, 255);
+    if (R_FAILED(swkbdInit(&swkbd, SWKBD_TYPE_NORMAL, 2, 255))) {
+        return "";
+    }
     swkbdSetHintText(&swkbd, "Enter search keyword...");
     swkbdSetInitialText(&swkbd, initialText.c_str());
     swkbdSetValidation(&swkbd, SWKBD_NOTEMPTY_NOTBLANK, 0, 0);
@@ -228,7 +230,7 @@ int main(int argc, char** argv) {
             }
 
             case AppState::DOWNLOADING: {
-                auto& task = DownloadManager::Instance().GetCurrentTask();
+                DownloadTask task = DownloadManager::Instance().GetCurrentTask();
                 if (task.isComplete) {
                     g_appState.store(AppState::DOWNLOADED);
                 } else if (task.isFailed) {
@@ -259,7 +261,8 @@ int main(int argc, char** argv) {
             running = false;
         }
 
-        auto& task = DownloadManager::Instance().GetCurrentTask();
+        // 按值获取任务快照，内部加锁
+        DownloadTask task = DownloadManager::Instance().GetCurrentTask();
         ui.Render(g_appState.load(), g_searchQuery, g_searchResults, task, g_downloadedFiles);
     }
 
