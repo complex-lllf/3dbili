@@ -83,7 +83,7 @@ HttpResponse Http_Get(const std::string& url, const std::vector<std::string>& ex
         // 逐块读取响应体
         u32 readSize = 0;
         char buffer[8192];
-        while (R_SUCCEEDED(httpcReadData(&ctx, (u8*)buffer, sizeof(buffer) - 1, &readSize)) && readSize > 0) {
+        while (R_SUCCEEDED(httpcReceiveData(&ctx, (u8*)buffer, sizeof(buffer) - 1, &readSize)) && readSize > 0) {
             buffer[readSize] = '\0';
             resp.body.append(buffer, readSize);
             readSize = 0;
@@ -120,8 +120,8 @@ HttpResponse Http_DownloadToMemory(const std::string& url) {
     }
 
     u32 readSize = 0;
-    while (R_SUCCEEDED(httpcReadData(&ctx, resp.binaryData + resp.binarySize,
-                                     capacity - resp.binarySize, &readSize)) && readSize > 0) {
+    while (R_SUCCEEDED(httpcReceiveData(&ctx, resp.binaryData + resp.binarySize,
+                                        capacity - resp.binarySize, &readSize)) && readSize > 0) {
         resp.binarySize += readSize;
         if (resp.binarySize >= capacity) {
             capacity *= 2;
@@ -154,9 +154,9 @@ HttpResponse Http_DownloadToFile(const std::string& url, const std::string& file
 
     resp.statusCode = (int)status;
 
-    // 获取 Content-Length
+    // 获取 Content-Length（新版 libctru 的 4 参数形式）
     char lenBuf[32] = {0};
-    httpcGetResponseHeader(ctx, "Content-Length", lenBuf, sizeof(lenBuf), nullptr);
+    httpcGetResponseHeader(&ctx, "Content-Length", lenBuf, sizeof(lenBuf));
     size_t totalSize = (size_t)strtoul(lenBuf, nullptr, 10);
 
     FILE* fp = fopen(filePath.c_str(), "wb");
@@ -169,7 +169,7 @@ HttpResponse Http_DownloadToFile(const std::string& url, const std::string& file
     u8 buffer[16384];
     size_t downloaded = 0;
 
-    while (R_SUCCEEDED(httpcReadData(&ctx, buffer, sizeof(buffer), &readSize)) && readSize > 0) {
+    while (R_SUCCEEDED(httpcReceiveData(&ctx, buffer, sizeof(buffer), &readSize)) && readSize > 0) {
         fwrite(buffer, 1, readSize, fp);
         downloaded += readSize;
         if (progressCallback) {
