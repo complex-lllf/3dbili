@@ -77,7 +77,7 @@ static Result Http_DoRequest(const std::string& url,
 }
 
 // 内部：获取内容总大小
-// 注意：httpcGetDownloadSizeState 的 out 参数不能为 nullptr，否则会写地址 0 崩溃
+// 注意：httpcGetDownloadSizeState 的 out 参数不能为 nullptr
 static size_t Http_GetContentLength(httpcContext* ctx) {
     u32 downloadSize = 0;
     u32 contentSize  = 0;

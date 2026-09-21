@@ -4,6 +4,7 @@
 #include <vector>
 #include <cstdio>
 #include <cctype>
+#include <atomic>
 
 #include "http.h"
 #include "json_helper.h"
@@ -39,7 +40,7 @@ std::string UrlEncode(const std::string& input) {
 }
 
 // ==================== 全局状态 ====================
-AppState g_appState = AppState::SEARCH;
+std::atomic<AppState> g_appState{AppState::SEARCH};
 std::string g_searchQuery;
 std::vector<VideoSearchItem> g_searchResults;
 std::vector<std::string> g_downloadedFiles;
@@ -116,7 +117,7 @@ bool DownloadVideo(const VideoSearchItem& item) {
         return false;
     }
 
-    g_appState = AppState::DOWNLOADING;
+    g_appState.store(AppState::DOWNLOADING);
     return true;
 }
 
@@ -198,14 +199,15 @@ int main(int argc, char** argv) {
     while (aptMainLoop() && running) {
         int event = ui.HandleInput();
 
-        switch (g_appState) {
+        AppState state = g_appState.load();
+        switch (state) {
             case AppState::SEARCH: {
                 if (event == 1 || event == 4) {
                     std::string input = OpenKeyboard(g_searchQuery);
                     if (!input.empty()) {
                         g_searchQuery = input;
                         if (DoSearch(g_searchQuery)) {
-                            g_appState = AppState::RESULTS;
+                            g_appState.store(AppState::RESULTS);
                             ui.SetResults(g_searchResults);
                         }
                     }
@@ -215,7 +217,7 @@ int main(int argc, char** argv) {
 
             case AppState::RESULTS: {
                 if (event == 2) {
-                    g_appState = AppState::SEARCH;
+                    g_appState.store(AppState::SEARCH);
                 } else if (event == 1) {
                     int idx = ui.GetSelectedIndex();
                     if (idx >= 0 && idx < (int)g_searchResults.size()) {
@@ -228,9 +230,9 @@ int main(int argc, char** argv) {
             case AppState::DOWNLOADING: {
                 auto& task = DownloadManager::Instance().GetCurrentTask();
                 if (task.isComplete) {
-                    g_appState = AppState::DOWNLOADED;
+                    g_appState.store(AppState::DOWNLOADED);
                 } else if (task.isFailed) {
-                    g_appState = AppState::RESULTS;
+                    g_appState.store(AppState::RESULTS);
                     g_statusMessage = "Download failed: " + task.errorMsg;
                 }
                 break;
@@ -239,14 +241,14 @@ int main(int argc, char** argv) {
             case AppState::DOWNLOADED: {
                 if (event == 1 || event == 2) {
                     g_downloadedFiles = DownloadManager::Instance().GetDownloadedFiles();
-                    g_appState = AppState::FILE_LIST;
+                    g_appState.store(AppState::FILE_LIST);
                 }
                 break;
             }
 
             case AppState::FILE_LIST: {
                 if (event == 2) {
-                    g_appState = AppState::SEARCH;
+                    g_appState.store(AppState::SEARCH);
                 }
                 break;
             }
@@ -258,7 +260,7 @@ int main(int argc, char** argv) {
         }
 
         auto& task = DownloadManager::Instance().GetCurrentTask();
-        ui.Render(g_appState, g_searchQuery, g_searchResults, task, g_downloadedFiles);
+        ui.Render(g_appState.load(), g_searchQuery, g_searchResults, task, g_downloadedFiles);
     }
 
     LOGF("=== 3dbili shutting down ===\n");
