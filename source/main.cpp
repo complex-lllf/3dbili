@@ -138,10 +138,10 @@ std::string OpenKeyboard(const std::string& initialText) {
 }
 
 int main(int argc, char** argv) {
-    // CIA 环境下必须先初始化 fs 服务并挂载 SD 卡
-    // 3dsx 环境下重复调用也是安全的
+    // 初始化文件系统服务
+    //   - 3dsx 环境：sdmc: 会随 gfxInitDefault 自动可用，但仍可安全调用 fsInit
+    //   - CIA 环境：必须调用 fsInit() 才会挂载 sdmc:，否则所有 sdmc:/... 路径均失败
     fsInit();
-    sdmcInit();
 
     romfsInit();
     gfxInitDefault();
@@ -170,7 +170,6 @@ int main(int argc, char** argv) {
         hidExit();
         gfxExit();
         romfsExit();
-        sdmcExit();
         fsExit();
         LOG_CLOSE();
         return 1;
@@ -187,7 +186,6 @@ int main(int argc, char** argv) {
         hidExit();
         gfxExit();
         romfsExit();
-        sdmcExit();
         fsExit();
         LOG_CLOSE();
         return 1;
@@ -270,7 +268,6 @@ int main(int argc, char** argv) {
     hidExit();
     gfxExit();
     romfsExit();
-    sdmcExit();
     fsExit();
     LOG_CLOSE();
 
