@@ -7,20 +7,25 @@
 
 // 下载管理模块
 // 职责：管理视频下载任务、进度追踪、SD 卡文件读写
+//
+// 路径约定：
+//   SD_DIR   = sdmc:/3dbili            （应用根目录）
+//   DOWN_DIR = sdmc:/3dbili/download   （视频下载目录）
+// 使用 sdmc: 前缀是为了兼容 CIA 运行环境（CIA 不会自动挂载 sdmc:）
 
 struct DownloadTask {
-    std::string bvid;
-    std::string title;
-    std::string outputPath;    // SD 卡路径
+    std::string bvid;          // 视频 BV 号
+    std::string title;         // 视频标题
+    std::string outputPath;    // SD 卡路径（.mp4 完整路径）
     std::string directUrl;     // MP4 直链
-    size_t totalBytes;
-    size_t downloadedBytes;
-    bool isComplete;
-    bool isFailed;
-    std::string errorMsg;
+    size_t totalBytes;         // 总字节数（0 表示未知）
+    size_t downloadedBytes;    // 已下载字节数
+    bool isComplete;           // 是否完成
+    bool isFailed;             // 是否失败
+    std::string errorMsg;      // 失败原因
 };
 
-// 下载管理器
+// 下载管理器（单例）
 class DownloadManager {
 public:
     // 获取单例
@@ -40,7 +45,7 @@ public:
     // 取消当前下载
     void CancelDownload();
 
-    // 获取已下载文件列表（扫描 /3ds/bilibili/ 目录）
+    // 获取已下载文件列表（扫描 sdmc:/3dbili/download/）
     std::vector<std::string> GetDownloadedFiles() const;
 
     // 进度回调（从后台线程调用，需线程安全地更新 UI 状态）
@@ -52,7 +57,11 @@ private:
     DownloadManager() = default;
     ~DownloadManager();
 
-    // 后台下载线程
+    // 禁止拷贝
+    DownloadManager(const DownloadManager&) = delete;
+    DownloadManager& operator=(const DownloadManager&) = delete;
+
+    // 后台下载线程入口
     static void DownloadThreadFunc(void* arg);
 
     DownloadTask m_currentTask;
@@ -64,8 +73,9 @@ private:
 
     std::function<void(size_t, size_t)> m_progressCallback;
 
-    // 目录路径
-    static constexpr const char* SD_DIR = "/3ds/bilibili";
+    // 目录路径（sdmc: 前缀，CIA / 3dsx 通用）
+    static constexpr const char* SD_DIR   = "sdmc:/3dbili";
+    static constexpr const char* DOWN_DIR = "sdmc:/3dbili/download";
 };
 
 // 清理文件名中的非法字符

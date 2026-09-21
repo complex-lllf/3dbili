@@ -1,4 +1,5 @@
 #include "http.h"
+#include "log.h"
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
@@ -11,8 +12,12 @@ static bool s_httpInitialized  = false;
 bool Http_Init() {
     if (s_httpInitialized) return true;
     Result rc = httpcInit(0x10000); // 64KB 缓冲区
-    if (R_FAILED(rc)) return false;
+    if (R_FAILED(rc)) {
+        LOGF("httpcInit failed: 0x%08lX\n", (unsigned long)rc);
+        return false;
+    }
     s_httpInitialized = true;
+    LOGF("httpc initialized\n");
     return true;
 }
 
@@ -20,12 +25,14 @@ void Http_Exit() {
     if (s_httpInitialized) {
         httpcExit();
         s_httpInitialized = false;
+        LOGF("httpc exited\n");
     }
 }
 
 void Http_SetHeaders(const std::string& userAgent, const std::string& referer) {
     s_userAgent = userAgent;
     s_referer   = referer;
+    LOGF("headers set: UA=%s REF=%s\n", userAgent.c_str(), referer.c_str());
 }
 
 // 内部：构建并发送请求
@@ -35,8 +42,13 @@ static Result Http_DoRequest(const std::string& url,
                              const std::vector<std::string>& extraHeaders) {
     Result rc;
 
+    LOGF("GET %s\n", url.c_str());
+
     rc = httpcOpenContext(ctx, HTTPC_METHOD_GET, url.c_str(), 1);
-    if (R_FAILED(rc)) return rc;
+    if (R_FAILED(rc)) {
+        LOGF("  httpcOpenContext failed: 0x%08lX\n", (unsigned long)rc);
+        return rc;
+    }
 
     httpcAddRequestHeaderField(ctx, "User-Agent", s_userAgent.c_str());
     httpcAddRequestHeaderField(ctx, "Referer", s_referer.c_str());
@@ -54,25 +66,37 @@ static Result Http_DoRequest(const std::string& url,
 
     httpcSetKeepAlive(ctx, HTTPC_KEEPALIVE_DISABLED);
     rc = httpcBeginRequest(ctx);
-    if (R_FAILED(rc)) return rc;
+    if (R_FAILED(rc)) {
+        LOGF("  httpcBeginRequest failed: 0x%08lX\n", (unsigned long)rc);
+        return rc;
+    }
 
     rc = httpcGetResponseStatusCode(ctx, outStatus);
+    LOGF("  HTTP status: %lu\n", (unsigned long)*outStatus);
     return rc;
 }
 
 // 内部：获取内容总大小
+// 注意：httpcGetDownloadSizeState 的 out 参数不能为 nullptr，否则会写地址 0 崩溃
 static size_t Http_GetContentLength(httpcContext* ctx) {
-    u32 contentSize = 0;
-    if (R_FAILED(httpcGetDownloadSizeState(ctx, nullptr, &contentSize))) {
+    u32 downloadSize = 0;
+    u32 contentSize  = 0;
+    Result rc = httpcGetDownloadSizeState(ctx, &downloadSize, &contentSize);
+    if (R_FAILED(rc)) {
+        LOGF("  httpcGetDownloadSizeState failed: 0x%08lX\n", (unsigned long)rc);
         return 0;
     }
+    LOGF("  content size: %lu\n", (unsigned long)contentSize);
     return (size_t)contentSize;
 }
 
 HttpResponse Http_Get(const std::string& url, const std::vector<std::string>& extraHeaders) {
     HttpResponse resp = { false, 0, "", nullptr, 0 };
 
-    if (!s_httpInitialized) return resp;
+    if (!s_httpInitialized) {
+        LOGF("Http_Get called but httpc not initialized\n");
+        return resp;
+    }
 
     httpcContext ctx;
     u32 status = 0;
@@ -86,24 +110,21 @@ HttpResponse Http_Get(const std::string& url, const std::vector<std::string>& ex
 
     if (status == 200) {
         size_t total = Http_GetContentLength(&ctx);
-        if (total == 0) {
-            // 如果服务器没给 Content-Length，用保守的兜底策略：
-            // 逐步读取直到 httpcDownloadData 返回没有更多数据
-            // 但为了简洁，此处直接返回失败
+        if (total == 0 || total > 8 * 1024 * 1024) {
+            LOGF("  abnormal content length: %lu, aborting\n", (unsigned long)total);
             httpcCloseContext(&ctx);
             return resp;
         }
 
-        // 预分配缓冲区
         resp.body.resize(total);
-
         u32 downloaded = 0;
-        // httpcDownloadData 会一次性下载全部内容
         rc = httpcDownloadData(&ctx, (u8*)resp.body.data(), (u32)total, &downloaded);
-        if (R_SUCCEEDED(rc)) {
+        if (R_SUCCEEDED(rc) && downloaded > 0) {
             resp.body.resize(downloaded);
             resp.success = true;
+            LOGF("  body read: %u bytes\n", downloaded);
         } else {
+            LOGF("  httpcDownloadData failed: 0x%08lX\n", (unsigned long)rc);
             resp.body.clear();
         }
     }
@@ -128,7 +149,8 @@ HttpResponse Http_DownloadToMemory(const std::string& url) {
     resp.statusCode = (int)status;
 
     size_t total = Http_GetContentLength(&ctx);
-    if (total == 0) {
+    if (total == 0 || total > 4 * 1024 * 1024) {
+        LOGF("  abnormal content length: %lu, aborting\n", (unsigned long)total);
         httpcCloseContext(&ctx);
         return resp;
     }
@@ -141,12 +163,14 @@ HttpResponse Http_DownloadToMemory(const std::string& url) {
 
     u32 downloaded = 0;
     rc = httpcDownloadData(&ctx, resp.binaryData, (u32)total, &downloaded);
-    if (R_SUCCEEDED(rc)) {
+    if (R_SUCCEEDED(rc) && downloaded > 0) {
         resp.binarySize = downloaded;
         resp.success = true;
+        LOGF("  downloaded %u bytes to memory\n", downloaded);
     } else {
         free(resp.binaryData);
         resp.binaryData = nullptr;
+        LOGF("  httpcDownloadData (memory) failed: 0x%08lX\n", (unsigned long)rc);
     }
 
     httpcCloseContext(&ctx);
@@ -163,6 +187,7 @@ HttpResponse Http_DownloadToFile(const std::string& url, const std::string& file
     u32 status = 0;
     Result rc = Http_DoRequest(url, &ctx, &status, {});
     if (R_FAILED(rc) || status != 200) {
+        LOGF("  request failed before download, status=%lu\n", (unsigned long)status);
         httpcCloseContext(&ctx);
         return resp;
     }
@@ -173,11 +198,11 @@ HttpResponse Http_DownloadToFile(const std::string& url, const std::string& file
 
     FILE* fp = fopen(filePath.c_str(), "wb");
     if (!fp) {
+        LOGF("  cannot open %s for writing\n", filePath.c_str());
         httpcCloseContext(&ctx);
         return resp;
     }
 
-    // 分块下载，避免一次性占用过多内存
     const u32 CHUNK_SIZE = 16384;
     u8* buffer = (u8*)malloc(CHUNK_SIZE);
     if (!buffer) {
@@ -187,27 +212,32 @@ HttpResponse Http_DownloadToFile(const std::string& url, const std::string& file
     }
 
     size_t downloaded = 0;
-    bool success = false;
+    bool finished = false;
 
-    while (downloaded < totalSize) {
-        u32 chunk = (totalSize - downloaded > CHUNK_SIZE) ? CHUNK_SIZE : (u32)(totalSize - downloaded);
+    // 如果 totalSize 为 0，则读到没有数据为止
+    while (!finished) {
+        u32 chunk = CHUNK_SIZE;
+        if (totalSize > 0) {
+            if (downloaded >= totalSize) break;
+            size_t remaining = totalSize - downloaded;
+            if (remaining < CHUNK_SIZE) chunk = (u32)remaining;
+        }
+
         u32 readBytes = 0;
-
         rc = httpcDownloadData(&ctx, buffer, chunk, &readBytes);
         if (R_FAILED(rc) || readBytes == 0) {
+            finished = true;
             break;
         }
 
         fwrite(buffer, 1, readBytes, fp);
         downloaded += readBytes;
 
-        if (progressCallback) {
-            progressCallback(downloaded, totalSize);
-        }
+        if (progressCallback) progressCallback(downloaded, totalSize);
 
         if (readBytes < chunk) {
             // 没有更多数据
-            break;
+            finished = true;
         }
     }
 
@@ -218,6 +248,10 @@ HttpResponse Http_DownloadToFile(const std::string& url, const std::string& file
     if (downloaded > 0) {
         resp.success = true;
         resp.binarySize = downloaded;
+        LOGF("  file downloaded: %lu bytes -> %s\n",
+             (unsigned long)downloaded, filePath.c_str());
+    } else {
+        LOGF("  no data downloaded for %s\n", url.c_str());
     }
 
     return resp;
