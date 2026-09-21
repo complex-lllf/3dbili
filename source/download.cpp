@@ -58,6 +58,9 @@ bool DownloadManager::StartDownload(const std::string& bvid, const std::string& 
     if (m_isDownloading) return false;
     if (directUrl.empty()) return false;
 
+    std::string safeName;
+    std::string outputPath;
+
     LightLock_Lock(&m_taskLock);
     m_currentTask.bvid = bvid;
     m_currentTask.title = title;
@@ -68,11 +71,12 @@ bool DownloadManager::StartDownload(const std::string& bvid, const std::string& 
     m_currentTask.isFailed = false;
     m_currentTask.errorMsg.clear();
 
-    std::string safeName = SanitizeFilename(title);
+    safeName = SanitizeFilename(title);
     m_currentTask.outputPath = std::string(DOWN_DIR) + "/" + safeName + ".mp4";
+    outputPath = m_currentTask.outputPath;
     LightLock_Unlock(&m_taskLock);
 
-    LOGF("start download: bvid=%s -> %s\n", bvid.c_str(), m_currentTask.outputPath.c_str());
+    LOGF("start download: bvid=%s -> %s\n", bvid.c_str(), outputPath.c_str());
     LOGF("  direct url: %s\n", directUrl.c_str());
 
     m_shouldCancel = false;
@@ -128,7 +132,7 @@ void DownloadManager::DownloadThreadFunc(void* arg) {
 
     // 拷贝需要的字段，避免后续访问 m_currentTask 时与其他线程竞争
     LightLock_Lock(&self->m_taskLock);
-    std::string url = self->m_currentTask.directUrl;
+    std::string url  = self->m_currentTask.directUrl;
     std::string path = self->m_currentTask.outputPath;
     LightLock_Unlock(&self->m_taskLock);
 
@@ -136,24 +140,22 @@ void DownloadManager::DownloadThreadFunc(void* arg) {
 
     LightLock_Lock(&self->m_taskLock);
     if (self->m_shouldCancel) {
-        LightLock_Unlock(&self->m_taskLock);
-        remove(path.c_str());
-        LightLock_Lock(&self->m_taskLock);
         self->m_currentTask.isFailed = true;
         self->m_currentTask.errorMsg = "Cancelled";
+        LightLock_Unlock(&self->m_taskLock);
+        remove(path.c_str());
         LOGF("download cancelled\n");
     } else if (resp.success) {
         self->m_currentTask.isComplete = true;
+        LightLock_Unlock(&self->m_taskLock);
         LOGF("download complete: %lu bytes\n", (unsigned long)resp.binarySize);
     } else {
         self->m_currentTask.isFailed = true;
         self->m_currentTask.errorMsg = "Download failed";
         LightLock_Unlock(&self->m_taskLock);
         remove(path.c_str());
-        LightLock_Lock(&self->m_taskLock);
         LOGF("download failed\n");
     }
-    LightLock_Unlock(&self->m_taskLock);
 
     self->m_isDownloading = false;
 }
