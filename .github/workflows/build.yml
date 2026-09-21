@@ -3,10 +3,19 @@ name: Build 3DS Homebrew
 on:
   push:
     branches: [ main, master ]
-  workflow_dispatch:      # 支持手动点击运行
+  workflow_dispatch:
+    inputs:
+      debug:
+        description: 'Build with debug logging'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
 
 permissions:
-  contents: write         # 创建 tag / Release 必需
+  contents: write
 
 env:
   DEVKITPRO: /opt/devkitpro
@@ -24,40 +33,82 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0       # 需要完整历史以便打 tag
+          fetch-depth: 0
           submodules: recursive
 
       - name: Install build dependencies
         run: |
           apt-get update
-          apt-get install -y make git
+          apt-get install -y make git imagemagick
 
       - name: Verify toolchain
         run: |
           echo "DEVKITPRO=$DEVKITPRO"
           which arm-none-eabi-g++
+          which bannertool
+          which makerom
           arm-none-eabi-g++ --version
 
-      - name: Build
-        run: make -j$(nproc)
+      - name: Ensure meta assets
+        run: |
+          mkdir -p meta
+          if [ ! -f meta/banner.png ]; then
+            echo "Generating placeholder banner.png"
+            convert -size 256x128 xc:'#1a1a2e' \
+                    -gravity center -pointsize 28 -fill '#ff88c0' \
+                    -annotate 0 '3dbili' meta/banner.png
+          fi
+          if [ ! -f meta/icon.png ]; then
+            echo "Generating placeholder icon.png"
+            convert -size 48x48 xc:'#1a1a2e' \
+                    -gravity center -pointsize 14 -fill '#ff88c0' \
+                    -annotate 0 '3d' meta/icon.png
+          fi
+          ls -la meta/
+
+      - name: Determine build mode
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.debug }}" = "true" ]; then
+            echo "type=debug" >> "$GITHUB_OUTPUT"
+            echo "makeflag=DEBUG=1" >> "$GITHUB_OUTPUT"
+            echo "suffix=-debug" >> "$GITHUB_OUTPUT"
+          else
+            echo "type=stable" >> "$GITHUB_OUTPUT"
+            echo "makeflag=" >> "$GITHUB_OUTPUT"
+            echo "suffix=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build 3dsx + smdh
+        run: make -j$(nproc) 3dsx ${{ steps.mode.outputs.makeflag }}
+
+      - name: Build cia
+        run: make cia ${{ steps.mode.outputs.makeflag }}
 
       - name: Upload 3DSX artifact
         uses: actions/upload-artifact@v4
         with:
-          name: bilibili-3ds-3dsx
+          name: bilibili-3ds-3dsx${{ steps.mode.outputs.suffix }}
           path: bilibili-3ds.3dsx
 
       - name: Upload SMDH artifact
         uses: actions/upload-artifact@v4
         with:
-          name: bilibili-3ds-smdh
+          name: bilibili-3ds-smdh${{ steps.mode.outputs.suffix }}
           path: bilibili-3ds.smdh
+
+      - name: Upload CIA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bilibili-3ds-cia${{ steps.mode.outputs.suffix }}
+          path: bilibili-3ds.cia
 
   release:
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.debug != 'true')
 
     steps:
       - name: Checkout repository
@@ -68,10 +119,8 @@ jobs:
       - name: Compute date tag
         id: tag
         run: |
-          # 生成 3dbili-YYYYMMDD，如 3dbili-20260921
           BASE="3dbili-$(date -u +'%Y%m%d')"
           TAG="$BASE"
-          # 如果今天已经发布过，追加 -N 后缀避免冲突
           N=1
           while git ls-remote --tags origin "refs/tags/$TAG" | grep -q "$TAG"; do
             N=$((N+1))
@@ -99,6 +148,12 @@ jobs:
           name: bilibili-3ds-smdh
           path: dist
 
+      - name: Download CIA artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: bilibili-3ds-cia
+          path: dist
+
       - name: List artifacts
         run: ls -la dist
 
@@ -110,20 +165,25 @@ jobs:
           body: |
             ## 3dbili ${{ steps.tag.outputs.tag }}
 
-            自动构建于 `$(date -u +'%Y-%m-%d %H:%M:%S UTC')`
-            Commit: `${{ github.sha }}`
+            自动构建（stable）。
 
             ### 文件说明
-            - `bilibili-3ds.3dsx` —— Homebrew 可执行文件
+            - `bilibili-3ds.cia` —— 可安装到系统菜单的正式应用（推荐）
+            - `bilibili-3ds.3dsx` —— Homebrew Launcher 运行版
             - `bilibili-3ds.smdh` —— 图标与元数据
 
-            ### 部署
-            将 `.3dsx` 放入 SD 卡 `/3ds/bilibili-3ds/`，通过 Homebrew Launcher 启动。
+            ### 安装方式
+            - **CIA**：用 FBI 安装到系统菜单
+            - **3DSX**：放入 SD 卡 `/3ds/bilibili-3ds/`，用 Homebrew Launcher 启动
+
+            ### 路径约定
+            - 下载视频: `sdmc:/3dbili/download/`
+            - 调试日志: `sdmc:/3dbili/log/`（仅 debug 构建）
 
             ### 已知限制
             - 3DS 原生 httpc 不支持 HTTPS，B站 API 需自建 HTTP→HTTPS 代理
-            - 封面暂显示为占位方块（JPEG 解码待集成）
           files: |
+            dist/bilibili-3ds.cia
             dist/bilibili-3ds.3dsx
             dist/bilibili-3ds.smdh
           draft: false
