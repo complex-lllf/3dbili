@@ -13,6 +13,14 @@ on:
         options:
           - 'false'
           - 'true'
+      enable_cia:
+        description: 'Enable CIA build (requires bannertool + makerom)'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
 
 permissions:
   contents: write
@@ -48,13 +56,54 @@ jobs:
           $DEVKITARM/bin/arm-none-eabi-g++ --version
           ls -la $DEVKITPRO/tools/bin/ || true
 
+      - name: Determine build mode
+        id: mode
+        run: |
+          # debug 开关
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.debug }}" = "true" ]; then
+            echo "type=debug" >> "$GITHUB_OUTPUT"
+            echo "makeflag=DEBUG=1" >> "$GITHUB_OUTPUT"
+            echo "suffix=-debug" >> "$GITHUB_OUTPUT"
+          else
+            echo "type=stable" >> "$GITHUB_OUTPUT"
+            echo "makeflag=" >> "$GITHUB_OUTPUT"
+            echo "suffix=" >> "$GITHUB_OUTPUT"
+          fi
+
+          # cia 开关
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ENABLE_CIA="${{ github.event.inputs.enable_cia }}"
+          else
+            ENABLE_CIA="true"
+          fi
+          echo "enable_cia=$ENABLE_CIA" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure meta assets
+        if: steps.mode.outputs.enable_cia == 'true'
+        run: |
+          mkdir -p meta
+          if [ ! -f meta/banner.png ]; then
+            echo "Generating placeholder banner.png"
+            convert -size 256x128 xc:'#1a1a2e' -strip -interlace none \
+                    -gravity center -pointsize 28 -fill '#ff88c0' \
+                    -annotate 0 '3dbili' meta/banner.png
+          fi
+          if [ ! -f meta/icon.png ]; then
+            echo "Generating placeholder icon.png"
+            convert -size 48x48 xc:'#1a1a2e' -strip -interlace none \
+                    -gravity center -pointsize 14 -fill '#ff88c0' \
+                    -annotate 0 '3d' meta/icon.png
+          fi
+          ls -la meta/
+
       - name: Install bannertool & makerom
+        if: steps.mode.outputs.enable_cia == 'true'
         run: |
           mkdir -p $DEVKITPRO/tools/bin
 
-          # bannertool 1.2.0（diasurgical 镜像）
+          # bannertool 1.2.0（Steveice10 原版）
           wget -q --tries=3 --timeout=30 \
-               https://github.com/diasurgical/bannertool/releases/download/1.2.0/bannertool.zip \
+               https://github.com/Steveice10/bannertool/releases/download/1.2.0/bannertool.zip \
                -O /tmp/bannertool.zip
           unzip -j /tmp/bannertool.zip "linux-x86_64/bannertool" -d $DEVKITPRO/tools/bin/
           chmod +x $DEVKITPRO/tools/bin/bannertool
@@ -68,43 +117,12 @@ jobs:
 
           echo "--- installed tools ---"
           ls -la $DEVKITPRO/tools/bin/ | grep -E "bannertool|makerom" || true
-          $DEVKITPRO/tools/bin/makerom -h 2>&1 | head -3 || true
-          $DEVKITPRO/tools/bin/bannertool 2>&1 | head -3 || true
-
-      - name: Ensure meta assets
-        run: |
-          mkdir -p meta
-          if [ ! -f meta/banner.png ]; then
-            echo "Generating placeholder banner.png"
-            convert -size 256x128 xc:'#1a1a2e' \
-                    -gravity center -pointsize 28 -fill '#ff88c0' \
-                    -annotate 0 '3dbili' meta/banner.png
-          fi
-          if [ ! -f meta/icon.png ]; then
-            echo "Generating placeholder icon.png"
-            convert -size 48x48 xc:'#1a1a2e' \
-                    -gravity center -pointsize 14 -fill '#ff88c0' \
-                    -annotate 0 '3d' meta/icon.png
-          fi
-          ls -la meta/
-
-      - name: Determine build mode
-        id: mode
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.debug }}" = "true" ]; then
-            echo "type=debug" >> "$GITHUB_OUTPUT"
-            echo "makeflag=DEBUG=1" >> "$GITHUB_OUTPUT"
-            echo "suffix=-debug" >> "$GITHUB_OUTPUT"
-          else
-            echo "type=stable" >> "$GITHUB_OUTPUT"
-            echo "makeflag=" >> "$GITHUB_OUTPUT"
-            echo "suffix=" >> "$GITHUB_OUTPUT"
-          fi
 
       - name: Build 3dsx + smdh
         run: make -j$(nproc) 3dsx ${{ steps.mode.outputs.makeflag }}
 
       - name: Build cia
+        if: steps.mode.outputs.enable_cia == 'true'
         run: make cia ${{ steps.mode.outputs.makeflag }}
 
       - name: Upload 3DSX artifact
@@ -120,6 +138,7 @@ jobs:
           path: bilibili-3ds.smdh
 
       - name: Upload CIA artifact
+        if: steps.mode.outputs.enable_cia == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: bilibili-3ds-cia${{ steps.mode.outputs.suffix }}
@@ -137,6 +156,16 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Determine release mode
+        id: relmode
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            ENABLE_CIA="${{ github.event.inputs.enable_cia }}"
+          else
+            ENABLE_CIA="true"
+          fi
+          echo "enable_cia=$ENABLE_CIA" >> "$GITHUB_OUTPUT"
 
       - name: Compute date tag
         id: tag
@@ -171,6 +200,7 @@ jobs:
           path: dist
 
       - name: Download CIA artifact
+        if: steps.relmode.outputs.enable_cia == 'true'
         uses: actions/download-artifact@v4
         with:
           name: bilibili-3ds-cia
@@ -190,9 +220,9 @@ jobs:
             自动构建（stable）。
 
             ### 文件说明
-            - `bilibili-3ds.cia` —— 可安装到系统菜单的正式应用（推荐）
             - `bilibili-3ds.3dsx` —— Homebrew Launcher 运行版
             - `bilibili-3ds.smdh` —— 图标与元数据
+            - `bilibili-3ds.cia` —— 可安装到系统菜单（如本次编译启用）
 
             ### 安装方式
             - **CIA**：用 FBI 安装到系统菜单
@@ -206,9 +236,9 @@ jobs:
             - 3DS 原生 httpc 不支持 HTTPS，B站 API 需自建 HTTP→HTTPS 代理
             - 封面暂显示为占位方块
           files: |
-            dist/bilibili-3ds.cia
             dist/bilibili-3ds.3dsx
             dist/bilibili-3ds.smdh
+            dist/bilibili-3ds.cia
           draft: false
           prerelease: false
           generate_release_notes: true
