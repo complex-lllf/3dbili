@@ -41,14 +41,6 @@ jobs:
           apt-get update
           apt-get install -y make git imagemagick
 
-      - name: Verify toolchain
-        run: |
-          echo "DEVKITPRO=$DEVKITPRO"
-          which arm-none-eabi-g++
-          which bannertool
-          which makerom
-          arm-none-eabi-g++ --version
-
       - name: Ensure meta assets
         run: |
           mkdir -p meta
