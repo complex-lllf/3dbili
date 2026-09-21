@@ -26,6 +26,10 @@
 
 #include <stddef.h>
 
+#ifndef JSMN_STATIC
+#define JSMN_STATIC
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
