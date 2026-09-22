@@ -40,11 +40,15 @@ jobs:
           apt-get update
           apt-get install -y make git wget unzip
 
+      - name: Install 3DS dev packages
+        run: dkp-pacman -S --noconfirm --needed 3ds-dev
+
       - name: Verify toolchain
         run: |
           echo "DEVKITPRO=$DEVKITPRO"
           echo "DEVKITARM=$DEVKITARM"
           $DEVKITARM/bin/arm-none-eabi-g++ --version
+          ls -la $DEVKITPRO/libctru/3ds_rules
           ls -la $DEVKITPRO/tools/bin/ || true
 
       - name: Determine build mode
