@@ -12,20 +12,22 @@ jobs:
     runs-on: ubuntu-latest
 
     container:
-      image: devkitpro/devkitarm-3ds:latest
+      image: devkitpro/devkitarm:latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Debug env
+      - name: Install 3DS development packages
+        run: |
+          dkp-pacman -S --noconfirm 3ds-dev
+
+      - name: Verify environment
         run: |
           echo "DEVKITPRO=$DEVKITPRO"
           echo "DEVKITARM=$DEVKITARM"
-          ls /opt/devkitpro/libctru/ | head
+          ls /opt/devkitpro/libctru/3ds_rules
           command -v arm-none-eabi-gcc
-          command -v 3dsxtool || true
-          command -v smdhtool || true
 
       - name: Build
         run: make
