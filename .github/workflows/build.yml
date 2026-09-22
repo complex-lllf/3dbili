@@ -4,10 +4,23 @@ on:
   push:
     branches: [ main, master ]
   workflow_dispatch:
+    inputs:
+      debug:
+        description: 'Build with debug logging'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+permissions:
+  contents: read
 
 env:
   DEVKITPRO: /opt/devkitpro
   DEVKITARM: /opt/devkitpro/devkitARM
+  DEVKITPPC: /opt/devkitpro/devkitPPC
   PATH: /opt/devkitpro/tools/bin:/opt/devkitpro/devkitARM/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 jobs:
@@ -17,29 +30,47 @@ jobs:
       image: devkitpro/devkitarm:latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Install 3DS dev packages
-        run: dkp-pacman -S --noconfirm --needed 3ds-dev
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y make git wget unzip
 
       - name: Verify toolchain
         run: |
           echo "DEVKITPRO=$DEVKITPRO"
-          $DEVKITARM/bin/arm-none-eabi-gcc --version
-          ls -la $DEVKITPRO/libctru/3ds_rules
+          echo "DEVKITARM=$DEVKITARM"
+          $DEVKITARM/bin/arm-none-eabi-g++ --version
           ls -la $DEVKITPRO/tools/bin/ || true
 
-      - name: Build 3dsx
-        run: make -j$(nproc) 3dsx
+      - name: Determine build mode
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.debug }}" = "true" ]; then
+            echo "type=debug" >> "$GITHUB_OUTPUT"
+            echo "makeflag=DEBUG=1" >> "$GITHUB_OUTPUT"
+            echo "suffix=-debug" >> "$GITHUB_OUTPUT"
+          else
+            echo "type=stable" >> "$GITHUB_OUTPUT"
+            echo "makeflag=" >> "$GITHUB_OUTPUT"
+            echo "suffix=" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build 3dsx + smdh
+        run: make -j$(nproc) 3dsx ${{ steps.mode.outputs.makeflag }}
 
       - name: Upload 3DSX artifact
         uses: actions/upload-artifact@v4
         with:
-          name: hello-gui-3dsx
+          name: hello-gui-3dsx${{ steps.mode.outputs.suffix }}
           path: hello-gui.3dsx
 
       - name: Upload SMDH artifact
         uses: actions/upload-artifact@v4
         with:
-          name: hello-gui-smdh
+          name: hello-gui-smdh${{ steps.mode.outputs.suffix }}
           path: hello-gui.smdh
