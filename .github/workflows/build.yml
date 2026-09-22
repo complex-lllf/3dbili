@@ -3,41 +3,43 @@ name: Build 3DS Homebrew
 on:
   push:
     branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
   workflow_dispatch:
+
+env:
+  DEVKITPRO: /opt/devkitpro
+  DEVKITARM: /opt/devkitpro/devkitARM
+  PATH: /opt/devkitpro/tools/bin:/opt/devkitpro/devkitARM/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     container:
       image: devkitpro/devkitarm:latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Install 3DS development packages
-        run: |
-          dkp-pacman -S --noconfirm 3ds-dev
+      - name: Install 3DS dev packages
+        run: dkp-pacman -S --noconfirm --needed 3ds-dev
 
-      - name: Verify environment
+      - name: Verify toolchain
         run: |
           echo "DEVKITPRO=$DEVKITPRO"
-          echo "DEVKITARM=$DEVKITARM"
-          ls /opt/devkitpro/libctru/3ds_rules
-          command -v arm-none-eabi-gcc
+          $DEVKITARM/bin/arm-none-eabi-gcc --version
+          ls -la $DEVKITPRO/libctru/3ds_rules
+          ls -la $DEVKITPRO/tools/bin/ || true
 
-      - name: Build
-        run: make
+      - name: Build 3dsx
+        run: make -j$(nproc) 3dsx
 
-      - name: Upload 3dsx artifact
+      - name: Upload 3DSX artifact
         uses: actions/upload-artifact@v4
         with:
           name: hello-gui-3dsx
-          path: |
-            hello-gui.3dsx
-            hello-gui.elf
-            hello-gui.smdh
-          if-no-files-found: error
+          path: hello-gui.3dsx
+
+      - name: Upload SMDH artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hello-gui-smdh
+          path: hello-gui.smdh
