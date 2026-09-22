@@ -2,57 +2,55 @@
 .SUFFIXES:
 #---------------------------------------------------------------------------------
 
-ifeq ($(strip $(DEVKITARM)),)
-$(error "Please set DEVKITARM in your environment. export DEVKITARM=<path to>devkitARM")
+ifeq ($(strip $(DEVKITPRO)),)
+$(error "Please set DEVKITPRO in your environment. export DEVKITPRO=<path to>/devkitpro")
 endif
 
 TOPDIR ?= $(CURDIR)
-include $(DEVKITARM)/3ds_rules
+include $(DEVKITPRO)/libctru/3ds_rules
 
 #---------------------------------------------------------------------------------
-TARGET      := bilibili-3ds
+# TARGET 是输出文件名
+# BUILD  是编译中间文件目录
+# SOURCES 是源码目录列表
+# INCLUDES 是头文件目录列表
+# DATA   是资源目录列表
+#---------------------------------------------------------------------------------
+TARGET      := hello-gui
 BUILD       := build
 SOURCES     := source
+INCLUDES    := include
 DATA        := data
-INCLUDES    := source
-ROMFS       := romfs
 
-ifeq ($(DEBUG),1)
-BUILD       := build-debug
-endif
-
+#---------------------------------------------------------------------------------
+# 选项
 #---------------------------------------------------------------------------------
 ARCH        := -march=armv6k -mtune=mpcore -mfloat-abi=hard -mtp=soft
 
 CFLAGS      := -g -Wall -O2 -mword-relocations \
-               -fomit-frame-pointer -ffunction-sections \
+               -ffunction-sections -fdata-sections \
                $(ARCH)
 
 CFLAGS      += $(INCLUDE) -D__3DS__
 
-CXXFLAGS    := $(CFLAGS) -std=gnu++17 -fno-rtti -fno-exceptions
-
-ifeq ($(DEBUG),1)
-CFLAGS      += -O0 -DENABLE_DEBUG_LOG
-CXXFLAGS    += -O0 -DENABLE_DEBUG_LOG
-endif
+CXXFLAGS    := $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++11
 
 ASFLAGS     := -g $(ARCH)
-LDFLAGS      = -specs=3dsx.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
+LDFLAGS     := -specs=3dsx.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
 
 LIBS        := -lcitro2d -lcitro3d -lctru -lm
+
 LIBDIRS     := $(CTRULIB)
 
 #---------------------------------------------------------------------------------
-ifneq ($(BUILD),$(notdir $(CURDIR)))
+# 自动收集源文件
 #---------------------------------------------------------------------------------
+ifneq ($(BUILD),$(notdir $(CURDIR)))
 
 export OUTPUT   := $(CURDIR)/$(TARGET)
 export TOPDIR   := $(CURDIR)
-
 export VPATH    := $(foreach dir,$(SOURCES),$(CURDIR)/$(dir)) \
                    $(foreach dir,$(DATA),$(CURDIR)/$(dir))
-
 export DEPSDIR  := $(CURDIR)/$(BUILD)
 
 CFILES      := $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.c)))
@@ -60,81 +58,51 @@ CPPFILES    := $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.cpp)))
 SFILES      := $(foreach dir,$(SOURCES),$(notdir $(wildcard $(dir)/*.s)))
 BINFILES    := $(foreach dir,$(DATA),$(notdir $(wildcard $(dir)/*.*)))
 
-export LD       := $(CXX)
+#---------------------------------------------------------------------------------
+# 使用 CC/CXX/AS 处理对应文件
+#---------------------------------------------------------------------------------
+ifeq ($(strip $(CPPFILES)),)
+    export LD := $(CC)
+else
+    export LD := $(CXX)
+endif
+
 export OFILES_BIN := $(addsuffix .o,$(BINFILES))
 export OFILES_SRC := $(CPPFILES:.cpp=.o) $(CFILES:.c=.o) $(SFILES:.s=.o)
 export OFILES     := $(OFILES_BIN) $(OFILES_SRC)
 export HFILES_BIN := $(addsuffix .h,$(subst .,_,$(BINFILES)))
 
-export INCLUDE    := $(foreach dir,$(INCLUDES),-I$(CURDIR)/$(dir)) \
-                     $(foreach dir,$(LIBDIRS),-I$(dir)/include) \
-                     -I$(CURDIR)/$(BUILD)
+export INCLUDE := $(foreach dir,$(INCLUDES),-I$(CURDIR)/$(dir)) \
+                  $(foreach dir,$(LIBDIRS),-I$(dir)/include) \
+                  -I$(CURDIR)/$(BUILD)
 
-export LIBPATHS   := $(foreach dir,$(LIBDIRS),-L$(dir)/lib)
+export LIBPATHS := $(foreach dir,$(LIBDIRS),-L$(dir)/lib)
 
-# CIA 相关变量
-BANNER      := meta/banner.png
-ICON        := meta/icon.png
-RSF         := meta/bilibili-3ds.rsf
-SMDH        := $(TARGET).smdh
-BANNER_BIN  := $(TARGET)-banner.bnr
-ICON_BIN    := $(TARGET)-icon.icn
+.PHONY: $(BUILD) clean all
 
-# devkitPro 工具绝对路径（不依赖 PATH）
-BANNERTOOL  := $(DEVKITPRO)/tools/bin/bannertool
-MAKEROM     := $(DEVKITPRO)/tools/bin/makerom
+all: $(BUILD)
 
-.PHONY: $(BUILD) clean all 3dsx cia
-
-#---------------------------------------------------------------------------------
-all: 3dsx
-
-3dsx: $(BUILD)
-	@echo "built ... $(TARGET).3dsx"
-
-cia: $(BUILD) $(TARGET).cia
-	@echo "built ... $(TARGET).cia"
-
-#---------------------------------------------------------------------------------
 $(BUILD):
 	@[ -d $@ ] || mkdir -p $@
 	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
 
-#---------------------------------------------------------------------------------
-# 生成 .cia：需要 makerom 与 bannertool
-# 若当前环境未安装，可参考 .github/workflows/build.yml 的下载步骤
-#---------------------------------------------------------------------------------
-$(TARGET).cia: $(TARGET).elf $(BANNER) $(ICON) $(RSF)
-	@echo "building cia ..."
-	@test -f "$(BANNER)" || (echo "ERROR: $(BANNER) not found" && exit 1)
-	@test -f "$(ICON)"   || (echo "ERROR: $(ICON) not found" && exit 1)
-	$(BANNERTOOL) makebanner -i "$(BANNER)" -o "$(BANNER_BIN)"
-	$(BANNERTOOL) makesmdh -s "3dbili" -l "Bilibili 3DS Client" \
-	    -p "AI generated" -i "$(ICON)" -o "$(ICON_BIN)"
-	$(MAKEROM) -f cia -o $(TARGET).cia -target t -exefslogo \
-	    -elf $(TARGET).elf -icon $(ICON_BIN) -banner $(BANNER_BIN) -rsf $(RSF)
-
-#---------------------------------------------------------------------------------
 clean:
 	@echo clean ...
-	@rm -fr build build-debug \
-	       $(TARGET).3dsx $(TARGET).smdh $(TARGET).elf $(TARGET).cia \
-	       $(BANNER_BIN) $(ICON_BIN)
+	@rm -fr $(BUILD) $(TARGET).3dsx $(TARGET).elf $(TARGET).smdh
 
-#---------------------------------------------------------------------------------
 else
-.PHONY: $(BUILD) clean all
 
 DEPENDS := $(OFILES:.o=.d)
 
-all: $(OUTPUT).3dsx $(OUTPUT).smdh
-
-$(OUTPUT).3dsx : $(OUTPUT).elf
+$(OUTPUT).3dsx : $(OUTPUT).elf $(OUTPUT).smdh
 $(OUTPUT).elf  : $(OFILES)
 
-$(OFILES_SRC)  : $(HFILES_BIN)
+%.smdh: $(TOPDIR)/Makefile
+	@smdhtool --create "$(TARGET)" "A 3DS GUI demo" "your-name" \
+	          $(TOPDIR)/icon.png $@ 2>/dev/null || \
+	smdhtool --create "$(TARGET)" "A 3DS GUI demo" "your-name" /dev/null $@
 
-%.bin.o %_bin.h : %.bin
+%.o: %.png
 	@echo $(notdir $<)
 	@$(bin2o)
 
