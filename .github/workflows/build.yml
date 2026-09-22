@@ -18,16 +18,22 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Show devkitPro env
+      - name: Set up devkitPro environment
         run: |
           echo "DEVKITPRO=$DEVKITPRO"
           echo "DEVKITARM=$DEVKITARM"
+          echo "/opt/devkitpro/devkitARM/bin" >> $GITHUB_PATH
+          echo "/opt/devkitpro/tools/bin"    >> $GITHUB_PATH
+
+      - name: Verify toolchain
+        run: |
           which arm-none-eabi-gcc
           arm-none-eabi-gcc --version
+          which 3dsxtool || true
+          which smdhtool  || true
 
       - name: Build
-        run: |
-          make
+        run: make
 
       - name: Upload 3dsx artifact
         uses: actions/upload-artifact@v4
