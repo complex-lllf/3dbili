@@ -3,244 +3,38 @@ name: Build 3DS Homebrew
 on:
   push:
     branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
   workflow_dispatch:
-    inputs:
-      debug:
-        description: 'Build with debug logging'
-        required: false
-        default: 'false'
-        type: choice
-        options:
-          - 'false'
-          - 'true'
-      enable_cia:
-        description: 'Enable CIA build (requires bannertool + makerom)'
-        required: false
-        default: 'true'
-        type: choice
-        options:
-          - 'true'
-          - 'false'
-
-permissions:
-  contents: write
-
-env:
-  DEVKITPRO: /opt/devkitpro
-  DEVKITARM: /opt/devkitpro/devkitARM
-  DEVKITPPC: /opt/devkitpro/devkitPPC
-  PATH: /opt/devkitpro/tools/bin:/opt/devkitpro/devkitARM/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     container:
       image: devkitpro/devkitarm:latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          submodules: recursive
 
-      - name: Install build dependencies
-        run: |
-          apt-get update
-          apt-get install -y make git wget unzip imagemagick
-
-      - name: Verify toolchain
+      - name: Show devkitPro env
         run: |
           echo "DEVKITPRO=$DEVKITPRO"
           echo "DEVKITARM=$DEVKITARM"
-          $DEVKITARM/bin/arm-none-eabi-g++ --version
-          ls -la $DEVKITPRO/tools/bin/ || true
+          which arm-none-eabi-gcc
+          arm-none-eabi-gcc --version
 
-      - name: Determine build mode
-        id: mode
+      - name: Build
         run: |
-          # debug 开关
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ github.event.inputs.debug }}" = "true" ]; then
-            echo "type=debug" >> "$GITHUB_OUTPUT"
-            echo "makeflag=DEBUG=1" >> "$GITHUB_OUTPUT"
-            echo "suffix=-debug" >> "$GITHUB_OUTPUT"
-          else
-            echo "type=stable" >> "$GITHUB_OUTPUT"
-            echo "makeflag=" >> "$GITHUB_OUTPUT"
-            echo "suffix=" >> "$GITHUB_OUTPUT"
-          fi
+          make
 
-          # cia 开关
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            ENABLE_CIA="${{ github.event.inputs.enable_cia }}"
-          else
-            ENABLE_CIA="true"
-          fi
-          echo "enable_cia=$ENABLE_CIA" >> "$GITHUB_OUTPUT"
-
-      - name: Ensure meta assets
-        if: steps.mode.outputs.enable_cia == 'true'
-        run: |
-          mkdir -p meta
-          if [ ! -f meta/banner.png ]; then
-            echo "Generating placeholder banner.png"
-            convert -size 256x128 xc:'#1a1a2e' -strip -interlace none \
-                    -gravity center -pointsize 28 -fill '#ff88c0' \
-                    -annotate 0 '3dbili' meta/banner.png
-          fi
-          if [ ! -f meta/icon.png ]; then
-            echo "Generating placeholder icon.png"
-            convert -size 48x48 xc:'#1a1a2e' -strip -interlace none \
-                    -gravity center -pointsize 14 -fill '#ff88c0' \
-                    -annotate 0 '3d' meta/icon.png
-          fi
-          ls -la meta/
-
-      - name: Install bannertool & makerom
-        if: steps.mode.outputs.enable_cia == 'true'
-        run: |
-          mkdir -p $DEVKITPRO/tools/bin
-
-          # bannertool 1.2.0（Steveice10 原版）
-          wget -q --tries=3 --timeout=30 \
-               https://github.com/Steveice10/bannertool/releases/download/1.2.0/bannertool.zip \
-               -O /tmp/bannertool.zip
-          unzip -j /tmp/bannertool.zip "linux-x86_64/bannertool" -d $DEVKITPRO/tools/bin/
-          chmod +x $DEVKITPRO/tools/bin/bannertool
-
-          # makerom v0.18（Project_CTR 官方 Release）
-          wget -q --tries=3 --timeout=30 \
-               https://github.com/3DSGuy/Project_CTR/releases/download/makerom-v0.18/makerom-v0.18-ubuntu_x86_64.zip \
-               -O /tmp/makerom.zip
-          unzip -j /tmp/makerom.zip "makerom" -d $DEVKITPRO/tools/bin/
-          chmod +x $DEVKITPRO/tools/bin/makerom
-
-          echo "--- installed tools ---"
-          ls -la $DEVKITPRO/tools/bin/ | grep -E "bannertool|makerom" || true
-
-      - name: Build 3dsx + smdh
-        run: make -j$(nproc) 3dsx ${{ steps.mode.outputs.makeflag }}
-
-      - name: Build cia
-        if: steps.mode.outputs.enable_cia == 'true'
-        run: make cia ${{ steps.mode.outputs.makeflag }}
-
-      - name: Upload 3DSX artifact
+      - name: Upload 3dsx artifact
         uses: actions/upload-artifact@v4
         with:
-          name: bilibili-3ds-3dsx${{ steps.mode.outputs.suffix }}
-          path: bilibili-3ds.3dsx
-
-      - name: Upload SMDH artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: bilibili-3ds-smdh${{ steps.mode.outputs.suffix }}
-          path: bilibili-3ds.smdh
-
-      - name: Upload CIA artifact
-        if: steps.mode.outputs.enable_cia == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: bilibili-3ds-cia${{ steps.mode.outputs.suffix }}
-          path: bilibili-3ds.cia
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.debug != 'true')
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Determine release mode
-        id: relmode
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            ENABLE_CIA="${{ github.event.inputs.enable_cia }}"
-          else
-            ENABLE_CIA="true"
-          fi
-          echo "enable_cia=$ENABLE_CIA" >> "$GITHUB_OUTPUT"
-
-      - name: Compute date tag
-        id: tag
-        run: |
-          BASE="3dbili-$(date -u +'%Y%m%d')"
-          TAG="$BASE"
-          N=1
-          while git ls-remote --tags origin "refs/tags/$TAG" | grep -q "$TAG"; do
-            N=$((N+1))
-            TAG="${BASE}-${N}"
-          done
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "Resolved tag: $TAG"
-
-      - name: Create and push tag
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag "${{ steps.tag.outputs.tag }}"
-          git push origin "${{ steps.tag.outputs.tag }}"
-
-      - name: Download 3DSX artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: bilibili-3ds-3dsx
-          path: dist
-
-      - name: Download SMDH artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: bilibili-3ds-smdh
-          path: dist
-
-      - name: Download CIA artifact
-        if: steps.relmode.outputs.enable_cia == 'true'
-        uses: actions/download-artifact@v4
-        with:
-          name: bilibili-3ds-cia
-          path: dist
-
-      - name: List artifacts
-        run: ls -la dist
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          name: "3dbili ${{ steps.tag.outputs.tag }}"
-          body: |
-            ## 3dbili ${{ steps.tag.outputs.tag }}
-
-            自动构建（stable）。
-
-            ### 文件说明
-            - `bilibili-3ds.3dsx` —— Homebrew Launcher 运行版
-            - `bilibili-3ds.smdh` —— 图标与元数据
-            - `bilibili-3ds.cia` —— 可安装到系统菜单（如本次编译启用）
-
-            ### 安装方式
-            - **CIA**：用 FBI 安装到系统菜单
-            - **3DSX**：放入 SD 卡 `/3ds/bilibili-3ds/`，用 Homebrew Launcher 启动
-
-            ### 路径约定
-            - 下载视频: `sdmc:/3dbili/download/`
-            - 调试日志: `sdmc:/3dbili/log/`（仅 debug 构建）
-
-            ### 已知限制
-            - 3DS 原生 httpc 不支持 HTTPS，B站 API 需自建 HTTP→HTTPS 代理
-            - 封面暂显示为占位方块
-          files: |
-            dist/bilibili-3ds.3dsx
-            dist/bilibili-3ds.smdh
-            dist/bilibili-3ds.cia
-          draft: false
-          prerelease: false
-          generate_release_notes: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: hello-gui-3dsx
+          path: |
+            hello-gui.3dsx
+            hello-gui.elf
+            hello-gui.smdh
+          if-no-files-found: error
